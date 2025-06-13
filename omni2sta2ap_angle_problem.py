@@ -37,10 +37,10 @@ def angle_between(ref_point, target_point):
     angle_deg = np.degrees(angle_rad)
     
     # Konwersja ujemnych kątów do przedziału 0-360
-    if angle_deg < 0:
-        angle_deg += 360
+    # if angle_deg < 0:
+    #     angle_deg += 360
         
-    return angle_deg
+    return angle_deg % 360
 
 def angle_between_points_from_perspective(ap_coords, sta1_coords, sta2_coords=None):
     """
@@ -73,6 +73,21 @@ def angle_between_points_from_perspective(ap_coords, sta1_coords, sta2_coords=No
         angle_diff = 360 - angle_diff
         
     return angle_diff
+
+def get_beam_angles_and_delta(AP1, STA1, AP2, STA2):
+    """
+    Oblicza kąty wiązek nadawczych oraz różnicę przesunięcia (delta).
+    
+    Zwraca:
+        α, β, γ, δ
+    """
+    alpha = angle_between(AP1, STA1)  # (1) f(AP1, STA1) -> α
+    beta  = angle_between(AP2, STA1)  # (2a) f(AP2, STA1) -> β
+    gamma = angle_between(AP2, STA2)  # (2b) f(AP2, STA2) -> γ
+
+    delta = (gamma - beta) % 360      # Δ = γ - β z zachowaniem zakresu [0,360)
+
+    return alpha, beta, gamma, delta
 # k,kat=angle_between(sta2,ap2)
 # sta2_antenna_power=calculate_power_at_angle(theta_bins,w_fft_dB,kat)
 # print("kat w stopniach miedzy sta2 i ap2 to: ", kat, "a moc odbierana: ", sta2_antenna_power)
@@ -175,6 +190,60 @@ class calculations:
         print("Kontrolnie wypisanie wszystkiego: ",clAP,d2,self.path_loss(d,f),10*log10(self.interf(STA, AP, all_active_transmissions))) ##zakomentowane
         sinr=(Tx_PWR+antenna_gain)-(self.path_loss(d,f)+10*np.log10(self.interf(STA, AP, all_active_transmissions)+noise))
         return sinr
+    
+    def SSB(self,AP_pos, beam_angle, STA_pos, TX_PWR_AP=Tx_PWR, theta_bins=theta_bins, w_fft_dB=w_fft_dB, f=f, Bp=Bp):
+        """
+        Oblicza siłę sygnału (Signal Strength under Beamforming, SSB).
+        
+        Args:
+            AP_pos: np.array([x, y]) - pozycja AP
+            beam_angle: float - kąt nadawania AP (w stopniach, 0-360)
+            STA_pos: np.array([x, y]) - pozycja stacji
+            TX_PWR_AP: float - moc nadawcza AP (dBm)
+            theta_bins, w_fft_dB: charakterystyka wiązki
+            f: częstotliwość (GHz)
+            Bp: breaking point (metry)
+            
+        Returns:
+            float: SSB w dBm
+        """
+        # Odległość
+        d = np.linalg.norm(STA_pos - AP_pos)
+        # Path loss
+        path_loss_val = calculations([AP_pos]).path_loss(d, f)
+        # Kąt do STA względem AP
+        angle_to_sta = angle_between(AP_pos, STA_pos)
+        # Różnica kąta względem kierunku wiązki
+        rel_angle = (angle_to_sta - beam_angle) % 360
+        # Wzmocnienie anteny w tym kierunku
+        antenna_gain = calculate_power_at_angle(theta_bins, w_fft_dB, rel_angle)
+        print("antena gain: ",antenna_gain)
+        # SSB = TX_PWR_AP - path_loss + antenna_gain
+        ssb = TX_PWR_AP - path_loss_val + antenna_gain
+        return ssb
+    
+    def SINR_beamforming(self,AP, AP_angle, STA, interfering_APs, interfering_angles, theta_bins, w_fft_dB, noise=noise):
+        """
+        Oblicza SINR z wykorzystaniem SSB.
+        AP: pozycja naszego AP
+        AP_angle: kąt nadawania naszego AP (w stopniach)
+        STA: pozycja stacji
+        interfering_APs: lista pozycji innych AP
+        interfering_angles: lista kątów nadawania innych AP
+        theta_bins, w_fft_dB: charakterystyka wiązki
+        noise: moc szumu (mW)
+        """
+        print("kąt między AP a STA: ", AP_angle)
+        signal = self.SSB(AP, AP_angle, STA, theta_bins=theta_bins, w_fft_dB=w_fft_dB)
+        interference = 0
+        for ap_int, angle_int in zip(interfering_APs, interfering_angles):
+            interference += pow(10, self.SSB(ap_int, angle_int, STA, theta_bins=theta_bins, w_fft_dB=w_fft_dB)/10)
+            print("poziom","kat interf: ",angle_int)
+        noise_mW = noise
+        SINR_dB = signal - 10 * np.log10(interference + noise_mW)
+        return SINR_dB
+
+
 
 # test_scen=calculations(aps)
 # print("kontrolnie odleglosc ", np.linalg.norm(sta3-ap1), "i dzielenie ", np.linalg.norm(sta3-ap1)/Bp, "calosc ", 35*log10(np.linalg.norm(sta3-ap1)/Bp))
@@ -487,8 +556,86 @@ def fourth_scenario_2AP_2STA(d):
     ax2.legend(loc='upper right')
     plt.show()
 
-fourth_scenario_2AP_2STA(12)
+# fourth_scenario_2AP_2STA(12)
 
+def scenario_2AP_2STA_beamforming(d):
+    """
+    Scenariusz dwóch AP i dwóch STA z wykorzystaniem get_beam_angles_and_delta oraz SINR_beamforming/SSB.
+    """
+    ap3 = np.array([37, 30])
+    ap4 = np.array([43, 30])
+    sta4 = np.array([40, 30])
+    sta5 = np.array([40, 30])
+    aps = np.array([ap3, ap4])
+    stas = np.array([sta4, sta5])
+    scen = calculations(aps)
+    sinr_beamforming = {}
+    throughput_beamforming = {}
+    sinr_omni = {}
+    throughput_omni = {}
+
+    theta_bins1, w_fft_dB1 = calculate_beam_pattern(12, 0.5, 0, np.asarray(np.linspace(-60, 60, 11)) / 360 * np.pi)
+    theta_bins2, w_fft_dB2 = calculate_beam_pattern(12, 0.5, 0, np.asarray(np.linspace(-60, 60, 11)) / 360 * np.pi)
+
+    plt.figure(figsize=(8, 8))
+    plt.scatter(aps[:, 0], aps[:, 1], c='red', label='AP', marker='x', s=100)
+    plt.scatter(stas[:, 0], stas[:, 1], c='blue', label='STA', marker='o', s=100)
+    plt.xlim(0, room_size-45)
+    plt.ylim(0, room_size-45)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.title('Rozmieszczenie AP i STA')
+    plt.xlabel('X (metry)')
+    plt.ylabel('Y (metry)')
+    plt.legend()
+    plt.show()
+
+    for i in range(1, d):
+        sta4[1] = sta4[1] - 1
+        sta5[1] = sta5[1] + 1
+        print("pozycje stacji: ", sta4, "i ", sta5)
+        # Wyznacz kąty wiązek i deltę
+        alpha, beta, gamma, delta = get_beam_angles_and_delta(ap3, sta4, ap4, sta5)
+
+        # Oblicz SINR_beamforming dla STA4 (od ap3, zakładając ap4 jako interferer)
+        interfering_APs = [ap4]
+        interfering_angles = [gamma]  # gamma to kąt wiązki ap4->sta5
+
+        # Używamy theta_bins1/w_fft_dB1 dla ap3, theta_bins2/w_fft_dB2 dla ap4
+        sinr = scen.SINR_beamforming(
+            ap3, alpha, sta4,
+            interfering_APs, interfering_angles,
+            theta_bins1, w_fft_dB1
+        )
+        sinr_beamforming[i] = sinr
+        throughput_beamforming[i] = sinr_to_mcs(sinr)[1]
+        d= np.linalg.norm(sta4 - ap3)
+        sinr_omni[i] = Tx_PWR - (scen.path_loss(d,f)+10*np.log10(noise))
+        rate_omni = sinr_to_mcs(sinr_omni[i])[1]
+        throughput_omni[i] = rate_omni
+
+        print(f"Iteracja {i}: alpha={alpha:.1f}, gamma={gamma:.1f}, delta={delta:.1f} ,SINR={sinr:.2f} dB, throughput={throughput_beamforming[i]:.1f} Mbps")
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(sinr_omni.keys(), sinr_omni.values(), label="SINR dookolny", color='b', marker='o', linestyle='-')
+    ax1.plot(sinr_beamforming.keys(), sinr_beamforming.values(), label="SINR beamforming", color='g', marker='x', linestyle='--')
+    ax1.set_xlabel("Odległość między STAs/2")
+    ax1.set_ylabel("SINR (dB)")
+    ax1.set_title("SINR beamforming w zależności od odległości między STA")
+    ax1.grid(True)
+    ax1.legend(loc='upper left')
+    ax1.set_ylim(bottom=0)
+
+
+    ax2 = ax1.twinx()
+    ax2.plot(throughput_omni.keys(), throughput_omni.values(), label="Przepustowość omni", color='r', linestyle='-.')
+    ax2.plot(throughput_beamforming.keys(), throughput_beamforming.values(), label="Przepustowość beamforming", color='orange', linestyle=':')
+    ax2.set_ylabel("Przepustowość (Mbps)")
+    ax2.legend(loc='upper right')
+    ax2.set_ylim(bottom=0)
+    plt.show()
+
+# Przykład uruchomienia:
+scenario_2AP_2STA_beamforming(12)
 # Wizualizacja rozmieszczenia
 # plt.figure(figsize=(8, 8))
 # plt.scatter(aps[:, 0], aps[:, 1], c='red', label='AP', marker='x', s=100)
