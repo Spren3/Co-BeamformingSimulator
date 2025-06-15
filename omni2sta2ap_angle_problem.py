@@ -633,6 +633,104 @@ def scenario_2AP_2STA_beamforming(d):
     ax2.legend(loc='upper right')
     ax2.set_ylim(bottom=0)
     plt.show()
+    
+    # --- WYKRESY SŁUPKOWE DLA STAŁYCH POZYCJI sta4=[40,25], sta5=[40,35] ---
+    sta4_fixed = np.array([40, 25])
+    sta5_fixed = np.array([40, 35])
+    ap3 = np.array([37, 30])
+    ap4 = np.array([43, 30])
+    aps = np.array([ap3, ap4])
+    scen = calculations(aps)
+
+    # 1. Tylko jeden AP nadaje (omni)
+    d_ap3_sta4 = np.linalg.norm(sta4_fixed - ap3)
+    d_ap4_sta5 = np.linalg.norm(sta5_fixed - ap4)
+    sinr_omni_ap3 = Tx_PWR - (scen.path_loss(d_ap3_sta4, f) + 10 * np.log10(noise))
+    sinr_omni_ap4 = Tx_PWR - (scen.path_loss(d_ap4_sta5, f) + 10 * np.log10(noise))
+    thr_omni_ap3 = sinr_to_mcs(sinr_omni_ap3)[1]
+    thr_omni_ap4 = sinr_to_mcs(sinr_omni_ap4)[1]
+
+    # 2. Oba AP nadają (omni)
+    interf_ap3 = pow(10, (Tx_PWR - scen.path_loss(np.linalg.norm(sta4_fixed - ap4), f)) / 10)
+    interf_ap4 = pow(10, (Tx_PWR - scen.path_loss(np.linalg.norm(sta5_fixed - ap3), f)) / 10)
+    sinr_omni_both_ap3 = Tx_PWR - (scen.path_loss(d_ap3_sta4, f) + 10 * np.log10(interf_ap3 + noise))
+    sinr_omni_both_ap4 = Tx_PWR - (scen.path_loss(d_ap4_sta5, f) + 10 * np.log10(interf_ap4 + noise))
+    thr_omni_both_ap3 = sinr_to_mcs(sinr_omni_both_ap3)[1]
+    thr_omni_both_ap4 = sinr_to_mcs(sinr_omni_both_ap4)[1]
+
+    # 3. Tylko jeden AP nadaje (beamforming)
+    angle_ap3_sta4 = angle_between(ap3, sta4_fixed)
+    angle_ap4_sta5 = angle_between(ap4, sta5_fixed)
+    theta_bins1_rot, w_fft_dB1_rot = rotate_beam_pattern(theta_bins1, w_fft_dB1, angle_ap3_sta4)
+    theta_bins2_rot, w_fft_dB2_rot = rotate_beam_pattern(theta_bins2, w_fft_dB2, angle_ap4_sta5)
+    gain_ap3 = calculate_power_at_angle(theta_bins1_rot, w_fft_dB1_rot, angle_ap3_sta4)
+    gain_ap4 = calculate_power_at_angle(theta_bins2_rot, w_fft_dB2_rot, angle_ap4_sta5)
+    sinr_beam_ap3 = scen.SSB(ap3, angle_ap3_sta4, sta4_fixed, theta_bins=theta_bins1, w_fft_dB=w_fft_dB1)
+    sinr_beam_ap4 = scen.SSB(ap4, angle_ap4_sta5, sta5_fixed, theta_bins=theta_bins2, w_fft_dB=w_fft_dB2)
+    thr_beam_ap3 = sinr_to_mcs(sinr_beam_ap3)[1]
+    thr_beam_ap4 = sinr_to_mcs(sinr_beam_ap4)[1]
+
+    # 4. Oba AP nadają (beamforming)
+    # Interferencja od drugiego AP (beamforming)
+    angle_ap4_sta4 = angle_between(ap4, sta4_fixed)
+    gain_ap4_to_sta4 = calculate_power_at_angle(theta_bins2_rot, w_fft_dB2_rot, angle_ap4_sta4)
+    interf_beam_ap3 = pow(10, (Tx_PWR + gain_ap4_to_sta4 - scen.path_loss(np.linalg.norm(sta4_fixed - ap4), f)) / 10)
+    sinr_beam_both_ap3 = scen.SSB(ap3, angle_ap3_sta4, sta4_fixed, theta_bins=theta_bins1, w_fft_dB=w_fft_dB1) - 10 * np.log10(interf_beam_ap3 + noise)
+    thr_beam_both_ap3 = sinr_to_mcs(sinr_beam_both_ap3)[1]
+
+    angle_ap3_sta5 = angle_between(ap3, sta5_fixed)
+    gain_ap3_to_sta5 = calculate_power_at_angle(theta_bins1_rot, w_fft_dB1_rot, angle_ap3_sta5)
+    interf_beam_ap4 = pow(10, (Tx_PWR + gain_ap3_to_sta5 - scen.path_loss(np.linalg.norm(sta5_fixed - ap3), f)) / 10)
+    sinr_beam_both_ap4 = scen.SSB(ap4, angle_ap4_sta5, sta5_fixed, theta_bins=theta_bins2, w_fft_dB=w_fft_dB2) - 10 * np.log10(interf_beam_ap4 + noise)
+    thr_beam_both_ap4 = sinr_to_mcs(sinr_beam_both_ap4)[1]
+
+    labels = [
+        "1 AP omni", "2 AP omni",
+        "1 AP beam", "2 AP beam"
+    ]
+    sinr_sta4 = [
+        sinr_omni_ap3, sinr_omni_both_ap3,
+        sinr_beam_ap3, sinr_beam_both_ap3
+    ]
+    sinr_sta5 = [
+        sinr_omni_ap4, sinr_omni_both_ap4,
+        sinr_beam_ap4, sinr_beam_both_ap4
+    ]
+    thr_sta4 = [
+        thr_omni_ap3, thr_omni_both_ap3,
+        thr_beam_ap3, thr_beam_both_ap3
+    ]
+    thr_sta5 = [
+        thr_omni_ap4, thr_omni_both_ap4,
+        thr_beam_ap4, thr_beam_both_ap4
+    ]
+
+    x = np.arange(len(labels))
+    width = 0.35
+
+    # Wykres słupkowy SINR
+    plt.figure(figsize=(10, 5))
+    plt.bar(x - width/2, sinr_sta4, width, label='STA4 [40,25]')
+    plt.bar(x + width/2, sinr_sta5, width, label='STA5 [40,35]')
+    plt.xticks(x, labels)
+    plt.ylabel("SINR (dB)")
+    plt.title("Porównanie SINR dla różnych wariantów (stałe pozycje STA)")
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+    # Wykres słupkowy przepustowości
+    plt.figure(figsize=(10, 5))
+    plt.bar(x - width/2, thr_sta4, width, label='STA4 [40,25]')
+    plt.bar(x + width/2, thr_sta5, width, label='STA5 [40,35]')
+    plt.xticks(x, labels)
+    plt.ylabel("Przepustowość (Mbps)")
+    plt.title("Porównanie przepustowości dla różnych wariantów (stałe pozycje STA)")
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
 
 # Przykład uruchomienia:
 scenario_2AP_2STA_beamforming(12)
@@ -658,3 +756,28 @@ scenario_2AP_2STA_beamforming(12)
 # plt.grid(True)  
 # plt.legend()
 # plt.show()
+# ...existing code...
+
+def check_beam_symmetry(theta_bins, w_fft_dB):
+    """
+    Sprawdza symetrię kołową wzoru promieniowania anteny.
+    Dla każdego kąta od 0 do 180 stopni porównuje zysk dla +θ i -θ.
+    Wynik rysuje na wykresie.
+    """
+    angles_deg = np.arange(0, 181, 1)
+    diff_gain = []
+    for angle in angles_deg:
+        gain_pos = calculate_power_at_angle(theta_bins, w_fft_dB, angle)
+        gain_neg = calculate_power_at_angle(theta_bins, w_fft_dB, (-angle) % 360)
+        print("w prawo: ", gain_pos, "w lewo: ", gain_neg)
+        diff = gain_pos - gain_neg
+        diff_gain.append(diff)
+    plt.figure(figsize=(8, 5))
+    plt.plot(angles_deg, diff_gain, marker='o')
+    plt.xlabel("Kąt od osi głównej (stopnie)")
+    plt.ylabel("Różnica zysku (dB) [θ - (-θ)]")
+    plt.title("Symetria kołowa wzoru promieniowania anteny")
+    plt.grid(True)
+    plt.show()
+
+# check_beam_symmetry(theta_bins, w_fft_dB)
