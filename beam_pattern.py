@@ -28,7 +28,8 @@ def calculate_beam_pattern(Nr, d, theta_soi, nulls_rad):
 
 # Funkcja do obracania wiązki
 def rotate_beam_pattern(theta_bins, w_fft_dB, rotation_deg):
-    rotation_rad = rotation_deg / 360  * np.pi
+    # rotation_rad = rotation_deg / 360  * np.pi
+    rotation_rad = np.deg2rad(rotation_deg)
     theta_bins_rotated = (theta_bins + rotation_rad) % (2 * np.pi)
     return theta_bins_rotated, w_fft_dB
 
@@ -53,7 +54,7 @@ def plot_beam_pattern(theta_bins, w_fft_dB, theta_soi_deg, nulls_deg):
     plt.show()
 
 # Przykład użycia
-theta_soi_deg = 0  # Kąt głównej wiązki (np. STA1)
+theta_soi_deg = 300  # Kąt głównej wiązki (np. STA1)
 theta_bins, w_fft_dB = calculate_beam_pattern(Nr, d, theta_soi, nulls_rad)
 theta_bins_rotated, w_fft_dB_rotated = rotate_beam_pattern(theta_bins, w_fft_dB, theta_soi_deg)
 
@@ -66,7 +67,7 @@ sta2_power = calculate_power_at_angle(theta_bins_rotated, w_fft_dB_rotated, sta2
 # print(f"Kąt STA2 względem anteny: {sta2_angle_deg} stopni")
 
 # Rysowanie wykresu
-plot_beam_pattern(theta_bins_rotated, w_fft_dB_rotated, theta_soi_deg, nulls_deg)
+# plot_beam_pattern(theta_bins_rotated, w_fft_dB_rotated, theta_soi_deg, nulls_deg)
 
 max_db = np.max(w_fft_dB)
 max_index = np.argmax(w_fft_dB)
@@ -74,3 +75,53 @@ angle_at_max = np.degrees(theta_bins[max_index])
 print(f"Maksymalna wartość: {max_db:.1f} dB przy kącie {angle_at_max:.1f}°")
 # for angle, db in zip(np.degrees(theta_bins), w_fft_dB):
 #     print(f"Kąt: {angle:.1f}°, dB: {db:.1f}")
+
+def plot_beam_pattern_cartesian(theta_bins, w_fft_dB):
+    """
+    Rysuje wykres charakterystyki wiązki w układzie kartezjańskim:
+    oś X: kąt w stopniach (0-360), oś Y: poziom wzmocnienia (dB)
+    """
+    angles_deg = (np.degrees(theta_bins) + 360) % 360
+    print("Kąty w stopniach:", angles_deg, "zyski w dB:", w_fft_dB)
+    plt.figure(figsize=(10, 5))
+    plt.plot(angles_deg, w_fft_dB)
+    plt.xlabel("Kąt (stopnie)")
+    plt.ylabel("Poziom wzmocnienia (dB)")
+    plt.title("Charakterystyka wiązki antenowej (0-360°)")
+    plt.xlim(0, 360)
+    plt.ylim(np.min(w_fft_dB)-2, np.max(w_fft_dB)+2)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.show()
+
+# użycie:
+# plot_beam_pattern_cartesian(theta_bins_rotated, w_fft_dB_rotated)
+
+def check_beam_symmetry(theta_bins, w_fft_dB):
+    """
+    Sprawdza symetrię kołową wzoru promieniowania anteny.
+    Dla każdego kąta od 0 do 180 stopni porównuje zysk dla +θ i -θ.
+    Wynik rysuje na wykresie.
+    Kąty są podawane w tej samej kolejności co w plot_beam_pattern_cartesian.
+    """
+    angles_deg = (np.degrees(theta_bins) + 360) % 360
+    sorted_idx = np.argsort(angles_deg)
+    angles_deg_sorted = angles_deg[sorted_idx]
+    w_fft_dB_sorted = w_fft_dB[sorted_idx]
+
+    half_len = len(angles_deg_sorted) // 2
+    diff_gain = []
+    for i in range(half_len):
+        gain_left = w_fft_dB_sorted[i]
+        gain_right = w_fft_dB_sorted[-(i+1)]
+        print(f"Kąt: {angles_deg_sorted[i]:.1f}° vs {angles_deg_sorted[-(i+1)]:.1f}° -> Zysk: {gain_left:.2f} dB vs {gain_right:.2f} dB")
+        diff_gain.append(abs(gain_left - gain_right))
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(angles_deg_sorted[:half_len], diff_gain, marker='o')
+    plt.xlabel("Kąt (stopnie, 0-180)")
+    plt.ylabel("Różnica zysku (dB)")
+    plt.title("Symetria lustrzana względem 180° wzoru promieniowania anteny")
+    plt.grid(True)
+    plt.show()
+
+# check_beam_symmetry(theta_bins_rotated, w_fft_dB_rotated)
