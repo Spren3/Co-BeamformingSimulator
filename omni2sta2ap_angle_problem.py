@@ -754,7 +754,7 @@ def scenario_2AP_2STA_beamforming(d):
 
 
 # Przykład uruchomienia:
-scenario_2AP_2STA_beamforming(12)
+# scenario_2AP_2STA_beamforming(12)
 # Wizualizacja rozmieszczenia
 # plt.figure(figsize=(8, 8))
 # plt.scatter(aps[:, 0], aps[:, 1], c='red', label='AP', marker='x', s=100)
@@ -794,11 +794,11 @@ def fifth_scenario_4STA_2AP_line(d1=10, d2_range=None):
         "omni_outer": [],
         "beam_outer": [],
         "omni_inner": [],
-        # "beam_inner": [],
+        "beam_inner": [],
         "omni_left": [],
         "beam_left": [],
-        # "omni_right": [],
-        # "beam_right": []
+        "omni_right": [],
+        "beam_right": []
     }
 
     # Ustawienia anten
@@ -858,9 +858,9 @@ def fifth_scenario_4STA_2AP_line(d1=10, d2_range=None):
         sinr2, thr2 = get_sinr_thr(AP1, STA2, AP2, STA3, False, theta_bins, w_fft_dB)
         sinr3, thr3 = get_sinr_thr(AP2, STA3, AP1, STA2, False, theta_bins, w_fft_dB)
         results["omni_inner"].append(thr2 + thr3)
-        # sinr2b, thr2b = get_sinr_thr(AP1, STA2, AP2, STA3, True, theta_bins, w_fft_dB)
-        # sinr3b, thr3b = get_sinr_thr(AP2, STA3, AP1, STA2, True, theta_bins, w_fft_dB)
-        # results["beam_inner"].append(thr2b + thr3b)
+        sinr2b, thr2b = get_sinr_thr(AP1, STA2, AP2, STA3, True, theta_bins, w_fft_dB)
+        sinr3b, thr3b = get_sinr_thr(AP2, STA3, AP1, STA2, True, theta_bins, w_fft_dB)
+        results["beam_inner"].append(thr2b + thr3b)
 
         # Lewe: STA1 (AP1), STA2 (AP1)
         sinr1l, thr1l = get_sinr_thr(AP1, STA1, AP2, STA4, False, theta_bins, w_fft_dB)
@@ -871,23 +871,23 @@ def fifth_scenario_4STA_2AP_line(d1=10, d2_range=None):
         results["beam_left"].append(thr1lb + thr2lb)
 
         # Prawe: STA3 (AP2), STA4 (AP2)
-        # sinr3r, thr3r = get_sinr_thr(AP2, STA3, AP1, STA2, False, theta_bins, w_fft_dB)
-        # sinr4r, thr4r = get_sinr_thr(AP2, STA4, AP1, STA1, False, theta_bins, w_fft_dB)
-        # results["omni_right"].append(thr3r + thr4r)
-        # sinr3rb, thr3rb = get_sinr_thr(AP2, STA3, AP1, STA2, True, theta_bins, w_fft_dB)
-        # sinr4rb, thr4rb = get_sinr_thr(AP2, STA4, AP1, STA1, True, theta_bins, w_fft_dB)
-        # results["beam_right"].append(thr3rb + thr4rb)
+        sinr3r, thr3r = get_sinr_thr(AP2, STA3, AP1, STA2, False, theta_bins, w_fft_dB)
+        sinr4r, thr4r = get_sinr_thr(AP2, STA4, AP1, STA1, False, theta_bins, w_fft_dB)
+        results["omni_right"].append(thr3r + thr4r)
+        sinr3rb, thr3rb = get_sinr_thr(AP2, STA3, AP1, STA2, True, theta_bins, w_fft_dB)
+        sinr4rb, thr4rb = get_sinr_thr(AP2, STA4, AP1, STA1, True, theta_bins, w_fft_dB)
+        results["beam_right"].append(thr3rb + thr4rb)
 
     # Wykres sumarycznego throughput vs d2
     plt.figure(figsize=(12, 7))
     plt.plot(d2_range, results["omni_outer"], 'o-', label="Omni do zewnętrznych")
     plt.plot(d2_range, results["beam_outer"], 'o-', label="Beam do zewnętrznych")
     plt.plot(d2_range, results["omni_inner"], 's--', label="Omni do wewnętrznych")
-    # plt.plot(d2_range, results["beam_inner"], 's--', label="Beam do wewnętrznych")
+    plt.plot(d2_range, results["beam_inner"], 's--', label="Beam do wewnętrznych")
     plt.plot(d2_range, results["omni_left"], 'd-.', label="Omni do lewych")
     plt.plot(d2_range, results["beam_left"], 'd-.', label="Beam do lewych")
-    # plt.plot(d2_range, results["omni_right"], 'x:', label="Omni do prawych")
-    # plt.plot(d2_range, results["beam_right"], 'x:', label="Beam do prawych")
+    plt.plot(d2_range, results["omni_right"], 'x:', label="Omni do prawych")
+    plt.plot(d2_range, results["beam_right"], 'x:', label="Beam do prawych")
     plt.xlabel("Odległość AP-AP (metry)")
     plt.ylabel("Sumaryczny throughput (Mbps)")
     plt.title(f"Sumaryczny throughput vs odległość AP-AP (d1={d1}m)")
@@ -896,5 +896,206 @@ def fifth_scenario_4STA_2AP_line(d1=10, d2_range=None):
     plt.tight_layout()
     plt.show()
 
+    # sumaryczny throughput dla każdej strategii
+    aggregate_throughput = [
+        np.sum(results["omni_outer"]),
+        np.sum(results["beam_outer"]),
+        np.sum(results["omni_inner"]),
+        np.sum(results["beam_inner"]),
+        np.sum(results["omni_left"]),
+        np.sum(results["beam_left"]),
+        np.sum(results["omni_right"]),
+        np.sum(results["beam_right"])
+        ]
+    aggregate_labels = [
+        "Omni outer", "Beam outer",
+        "Omni inner",  "Beam inner",
+        "Omni left", "Beam left",
+        "Omni right", "Beam right"
+        ]
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(aggregate_labels, aggregate_throughput, color=['b', 'g', 'c', 'r', 'orange'])
+    plt.ylabel("Aggregate network throughput (Mbps)")
+    plt.title("Aggregate network throughput for each strategy")
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
 # Przykład użycia:
 # fifth_scenario_4STA_2AP_line(d1=10, d2_range=None)
+
+####### scenariusz z wielokrotna symulacja, N rund, seed ------------
+def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
+    """
+    Funkcja do przeprowadzenia wielu rund symulacji.
+    tr_rounds: liczba rund symulacji
+    Tr_type: typ transmisji (omni/beam)
+    aps_transmitting: Liczba transmitujących AP
+    seed: ziarno
+    """
+    np.random.seed(seed)  # Ustawienie ziarna dla powtarzalności
+    def pick_transmitting_aps(aps, aps_transmitting):
+        N = len(aps)
+        if aps_transmitting == "pojedyncze":
+            idx = np.random.choice(N)
+            return [idx]
+        elif aps_transmitting == "wszystkie":
+            return list(range(N))
+        elif aps_transmitting == "losowo":
+            k = np.random.randint(1, N+1)
+            return list(np.random.choice(N, k, replace=False))
+        elif aps_transmitting == "inteligentnie":
+            # Przykład: jeśli AP1 do zewnętrznej stacji, AP2 też do zewnętrznej
+            # Tu: wybierz AP nadające do stacji najbardziej oddalonej od środka
+            center = np.array([room_size/2, room_size/2])
+            sta_dists = [np.linalg.norm(sta - center) for sta in stas]
+            # Przypisz AP do stacji o największej odległości od środka
+            idxs = []
+            for i, ap in enumerate(aps):
+                # Znajdź najdalszą stację od środka
+                sta_idx = np.argmax(sta_dists)
+                # Jeśli AP jest bliżej tej stacji niż drugi AP, dodaj do nadających
+                if np.linalg.norm(ap - stas[sta_idx]) < np.linalg.norm(aps[1-i] - stas[sta_idx]):
+                    idxs.append(i)
+            if not idxs:
+                idxs = [np.random.choice(N)]
+            return idxs
+        else:
+            return list(range(N))  # domyślnie wszyscy
+    ap1 = np.random.uniform(0, room_size-45, size=2)
+    ap2 = np.random.uniform(0, room_size-45, size=2)
+    sta1 = np.random.uniform(0, room_size-45, size=2)
+    sta2 = np.random.uniform(0, room_size-45, size=2)
+    aps = np.array([ap1, ap2])
+    stas = np.array([sta1, sta2])
+    plt.figure(figsize=(8, 8))
+    plt.scatter([ap1[0], ap2[0]], [ap1[1], ap2[1]], c='red', label='AP', marker='x', s=100)
+    plt.scatter([sta1[0], sta2[0]], [sta1[1], sta2[1]], c='blue', label='STA', marker='o', s=100)
+    plt.xlim(0, room_size-45)
+    plt.ylim(0, room_size-45)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.title('Rozmieszczenie AP i STA')
+    plt.xlabel('X (metry)')
+    plt.ylabel('Y (metry)')
+    plt.legend()
+    plt.show()
+
+    # Określenie, które AP transmitują w danej rundzie
+
+    # Przykład użycia: transmitting_idxs = pick_transmitting_aps(aps, aps_transmitting)
+    results = []
+    for i in range(tr_rounds):
+        # Losowanie pozycji AP i STA
+        # Obliczenia
+        scen = calculations(aps)
+        
+        transmitting_idxs = pick_transmitting_aps(aps, aps_transmitting)
+        # Jeśli transmituje więcej niż jeden AP, losuj do której STA transmituje każdy AP
+        if len(transmitting_idxs) > 1:
+            sta_idxs = np.random.choice(len(stas), len(transmitting_idxs), replace=False)
+            # Przypisz każdemu AP transmitującemu wybraną STA
+            for ap_idx, sta_idx in zip(transmitting_idxs, sta_idxs):
+                stas[ap_idx] = stas[sta_idx]
+            print(f"Runda {i+1}: Do ap1 przypisano STA {sta_idxs[0]}, do ap2 przypisano STA {sta_idxs[1]}")
+        if tr_type == "omni":
+            throughputs = []
+            # Jeśli transmituje więcej niż jeden AP, uwzględnij interferencję od pozostałych AP
+            if len(transmitting_idxs) > 1:
+                for idx in transmitting_idxs:
+                    ap = aps[idx]
+                    sta = stas[idx]
+                    interf = 0
+                    for jdx in transmitting_idxs:
+                        if jdx != idx:
+                            ap_int = aps[jdx]
+                            interf += pow(10, (Tx_PWR - scen.path_loss(np.linalg.norm(sta - ap_int), f)) / 10)
+                    sinr = Tx_PWR - (scen.path_loss(np.linalg.norm(sta - ap), f) + 10 * np.log10(interf + noise))
+                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), SINR: {sinr:.2f} dB, path_loss: {pl:.2f} dB, interferencja: {interf:.2f} dB")
+                    thr = sinr_to_mcs(sinr)[1]
+                    print("thr",thr)
+                    throughputs[idx] = thr
+            else:
+                for idx in transmitting_idxs:
+                    ap = aps[idx]
+                    sta = stas[idx]
+                    pl= scen.path_loss(np.linalg.norm(sta - ap), f)                
+                    sinr = Tx_PWR - (pl + 10 * np.log10(noise))
+                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), SINR: {sinr:.2f} dB, path_loss: {pl:.2f} dB")
+                    thr = sinr_to_mcs(sinr)[1]
+                    throughputs.append(thr)
+            results.append(np.mean(throughputs))
+
+        elif tr_type == "beam":
+            theta_bins, w_fft_dB = calculate_beam_pattern(8, 0.5, 0, np.asarray(np.linspace(-60, 60, 11)) / 360 * np.pi)
+            throughputs = []
+            # for idx in transmitting_idxs:
+            #     ap = aps[idx]
+            #     sta = stas[idx]
+            #     beam_angle = angle_between(ap, sta)
+            #     gain = calculate_power_at_angle(theta_bins, w_fft_dB, beam_angle)
+            #     pl= scen.path_loss(np.linalg.norm(sta - ap), f)
+            #     sinr = Tx_PWR + gain - (pl + 10 * np.log10(noise))
+            #     print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB")
+            #     throughputs.append(sinr_to_mcs(sinr)[1])
+            # Jeśli transmituje więcej niż jeden AP, uwzględnij interferencję od pozostałych AP (beamforming)
+            if len(transmitting_idxs) > 1:
+                for idx in transmitting_idxs:
+                    ap = aps[idx]
+                    sta = stas[idx]
+                    beam_angle = angle_between(ap, sta)
+                    theta_bins_rot, w_fft_dB_rot=rotate_beam_pattern(theta_bins, w_fft_dB, beam_angle)
+                    gain = calculate_power_at_angle(theta_bins_rot, w_fft_dB_rot, beam_angle)
+                    pl = scen.path_loss(np.linalg.norm(sta - ap), f)
+                    interf = 0
+                    for jdx in transmitting_idxs:
+                        if jdx != idx:
+                            ap_int = aps[jdx]
+                            sta_int = stas[jdx]
+                            int_beam_angle = angle_between(ap_int, sta)
+                            int_gain = calculate_power_at_angle(theta_bins_rot, w_fft_dB_rot, int_beam_angle)
+                            interf += pow(10, (Tx_PWR + int_gain - scen.path_loss(np.linalg.norm(sta - ap_int), f)) / 10)
+                    sinr = Tx_PWR + gain - (scen.path_loss(np.linalg.norm(sta - ap), f) + 10 * np.log10(interf + noise))
+                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB, interferencja: {interf:.2f} dB")
+                    throughputs.append(sinr_to_mcs(sinr)[1])
+            else:
+                for idx in transmitting_idxs:
+                    ap = aps[idx]
+                    sta = stas[idx]
+                    beam_angle = angle_between(ap, sta)
+                    gain = calculate_power_at_angle(theta_bins, w_fft_dB, beam_angle)
+                    pl= scen.path_loss(np.linalg.norm(sta - ap), f)
+                    sinr = Tx_PWR + gain - (pl + 10 * np.log10(noise))
+                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB")
+                    throughputs.append(sinr_to_mcs(sinr)[1])
+            results.append(np.mean(throughputs))
+            # Wykres sumarycznego throughput po wszystkich rundach
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(1, tr_rounds + 1), results, marker='o', linestyle='-', color='b', label='Średni throughput (Mbps)')
+    plt.xlabel("Runda")
+    plt.ylabel("Średni throughput (Mbps)")
+    plt.title("Sumaryczny throughput po wszystkich rundach")
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+            # # Dodatkowo: SINR, kąty, wybór AP/STA w każdej rundzie
+            # print("\nSzczegóły każdej rundy:")
+            # theta_bins, w_fft_dB = calculate_beam_pattern(8, 0.5, 0, np.asarray(np.linspace(-60, 60, 11)) / 360 * np.pi)
+            # for i in range(tr_rounds):
+            #     print(f"\nRunda {i+1}:")
+            #     transmitting_idxs = pick_transmitting_aps(aps, aps_transmitting)
+            #     for idx in transmitting_idxs:
+            #         ap = aps[idx]
+            #         sta = stas[idx]
+            #         angle = angle_between(ap, sta)
+            #         d = np.linalg.norm(sta - ap)
+            #         if tr_type == "omni":
+            #             sinr = Tx_PWR - (calculations(aps).path_loss(d, f) + 10 * np.log10(noise))
+            #             print(f"AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {angle:.2f}°, SINR: {sinr:.2f} dB")
+            #         elif tr_type == "beam":
+            #             gain = calculate_power_at_angle(theta_bins, w_fft_dB, angle)
+            #             sinr = Tx_PWR + gain - (calculations(aps).path_loss(d, f) + 10 * np.log10(noise))
+            #             print(f"AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {angle:.2f}°, gain: {gain:.2f} dB, SINR: {sinr:.2f} dB")
+round_sim(10, "beam", "wszystkie", 42)
