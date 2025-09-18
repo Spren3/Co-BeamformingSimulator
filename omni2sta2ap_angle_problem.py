@@ -116,6 +116,28 @@ class calculations:
     def __init__(self,aps):
         self.aps=aps
 
+    mcs_table_ac_ax = [
+        (4, 0, "BPSK", "1/2", 8.6),
+        (7, 1, "QPSK", "1/2", 17.2),
+        (10, 2, "QPSK", "3/4", 25.8),
+        (13, 3, "16-QAM", "1/2", 34.4),
+        (16, 4, "16-QAM", "3/4", 51.6),
+        (19, 5, "64-QAM", "2/3", 68.8),
+        (22, 6, "64-QAM", "3/4", 77.4),
+        (25, 7, "64-QAM", "5/6", 86),
+        (28, 8, "256-QAM", "3/4", 103.2),
+        (31, 9, "256-QAM", "5/6", 114.7),
+        (34, 10, "1024-QAM", "3/4", 129),
+        (37, 11, "1024-QAM", "5/6", 143.4),
+    ]
+
+    def sinr_to_mcs(sinr):
+        for sinr_threshold, mcs_index, mod, coding, rate in mcs_table_ac_ax:
+            if sinr < sinr_threshold:
+                return mcs_index - 1, rate
+        return mcs_table_ac_ax[-1][1], mcs_table_ac_ax[-1][4]
+
+
     def pickOtherAP(self,STA,AP):
         min=100
         # min=np.linalg.norm(STA-AP)
@@ -281,7 +303,80 @@ def sinr_to_mcs(sinr):
     return mcs_table_ac_ax[-1][1], mcs_table_ac_ax[-1][4]
 
 # results_throughput = [sinr_to_mcs(sinr) for sinr in sinr_values.values()]
+def compute_mean_ci(samples, alpha=0.05, method='t', n_bootstrap=2000):
+    """
+    Zwraca (mean, ci_lower, ci_upper) dla listy próbek.
+    method: 't' (domyślnie) lub 'bootstrap'
+    """
+    import numpy as np
+    try:
+        from scipy import stats
+    except Exception:
+        stats = None
 
+    arr = np.asarray(samples, dtype=float)
+    n = len(arr)
+    mean = float(np.mean(arr))
+    if n < 2:
+        return mean, mean, mean
+
+    if method == 't' and stats is not None:
+        se = np.std(arr, ddof=1) / np.sqrt(n)
+        tval = stats.t.ppf(1 - alpha/2, n - 1)
+        lo = mean - tval * se
+        hi = mean + tval * se
+        return mean, lo, hi
+
+    # bootstrap fallback
+    boots = []
+    for _ in range(n_bootstrap):
+        sample = np.random.choice(arr, size=n, replace=True)
+        boots.append(sample.mean())
+    lo = np.percentile(boots, 100 * (alpha/2))
+    hi = np.percentile(boots, 100 * (1 - alpha/2))
+    return mean, lo, hi
+
+def plot_means_with_ci(sample_lists, labels=None, alpha=0.05, method='t', capsize=6, figsize=(8,5), ylim=None, title="Średni throughput z 95% przedziałami ufności"):
+    """
+    Przyjmuje listę prób (lista list/iterable) i rysuje słupek dla każdej z nich z
+    przedziałem ufności obliczonym przez compute_mean_ci.
+    Zwraca listę (mean, lo, hi) dla każdego z wejść.
+    Args:
+      - sample_lists: [samples1, samples2, ...] (każdy element to lista/np.array prób)
+      - labels: lista etykiet dla słupków (domyślnie "Var 1", "Var 2", ...)
+      - alpha, method: parametry przekazywane do compute_mean_ci
+      - capsize, figsize, ylim, title: wykres
+    """
+    n_vars = len(sample_lists)
+    if labels is None:
+        labels = [f"Var {i+1}" for i in range(n_vars)]
+    if len(labels) != n_vars:
+        raise ValueError("Długość labels musi równać się liczbie list w sample_lists")
+
+    means = []
+    lo_bounds = []
+    hi_bounds = []
+    results = []
+
+    for samples in sample_lists:
+        mean, lo, hi = compute_mean_ci(samples, alpha=alpha, method=method)
+        means.append(mean)
+        lo_bounds.append(mean - lo)
+        hi_bounds.append(hi - mean)
+        results.append((mean, lo, hi))
+
+    x = np.arange(n_vars)
+    plt.figure(figsize=figsize)
+    colors = plt.cm.tab20.colors
+    plt.bar(x, means, yerr=[lo_bounds, hi_bounds], capsize=capsize, color=[colors[i % len(colors)] for i in range(n_vars)])
+    plt.xticks(x, labels)
+    plt.ylabel("Średni throughput (Mbps)")
+    plt.title(title)
+    if ylim is not None:
+        plt.ylim(ylim)
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.show()
 # for sinr, (mcs, rate) in zip(sinr_values.values(), results_throughput):
 #     print(f"SINR: {sinr:.2f} dB -> MCS: {mcs}, Rate: {rate} Mbps")
 def first_scenario_2AP_STA_moving(AP1,AP2,distance):
@@ -985,36 +1080,50 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
 
     # Przykład użycia: transmitting_idxs = pick_transmitting_aps(aps, aps_transmitting)
     results = []
+    total=0
+    totalist=[]
     for i in range(tr_rounds):
         # Losowanie pozycji AP i STA
         # Obliczenia
         scen = calculations(aps)
         
         transmitting_idxs = pick_transmitting_aps(aps, aps_transmitting)
+        ap_to_sta = {}
         # Jeśli transmituje więcej niż jeden AP, losuj do której STA transmituje każdy AP
         if len(transmitting_idxs) > 1:
             sta_idxs = np.random.choice(len(stas), len(transmitting_idxs), replace=False)
             # Przypisz każdemu AP transmitującemu wybraną STA
             for ap_idx, sta_idx in zip(transmitting_idxs, sta_idxs):
-                stas[ap_idx] = stas[sta_idx]
-            print(f"Runda {i+1}: Do ap1 przypisano STA {sta_idxs[0]}, do ap2 przypisano STA {sta_idxs[1]}")
+                # stas[ap_idx] = stas[sta_idx]
+                ap_to_sta[ap_idx] = sta_idx
+            print(f"Runda {i+1}: Przypisania AP→STA: {ap_to_sta}")
+            # print(f"Runda {i+1}: Do ap1 przypisano STA {sta_idxs[0]}, do ap2 przypisano STA {sta_idxs[1]}")
         if tr_type == "omni":
             throughputs = []
             # Jeśli transmituje więcej niż jeden AP, uwzględnij interferencję od pozostałych AP
             if len(transmitting_idxs) > 1:
                 for idx in transmitting_idxs:
                     ap = aps[idx]
-                    sta = stas[idx]
+                    # sta = stas[idx]
+                    sta=stas[ap_to_sta[idx]]
+                    print("idx: ",idx," sta: ",sta," ap: ",ap)
+                    pl = scen.path_loss(np.linalg.norm(sta - ap), f)
                     interf = 0
                     for jdx in transmitting_idxs:
                         if jdx != idx:
                             ap_int = aps[jdx]
                             interf += pow(10, (Tx_PWR - scen.path_loss(np.linalg.norm(sta - ap_int), f)) / 10)
+                            print("dla beam gain interf to: ",interf)
+
                     sinr = Tx_PWR - (scen.path_loss(np.linalg.norm(sta - ap), f) + 10 * np.log10(interf + noise))
                     print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), SINR: {sinr:.2f} dB, path_loss: {pl:.2f} dB, interferencja: {interf:.2f} dB")
                     thr = sinr_to_mcs(sinr)[1]
                     print("thr",thr)
-                    throughputs[idx] = thr
+                    # throughputs[idx] = thr
+                    throughputs.append(thr)
+                    total+=thr
+                    print("total: ",total)
+                totalist.append(total)
             else:
                 for idx in transmitting_idxs:
                     ap = aps[idx]
@@ -1024,6 +1133,9 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
                     print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), SINR: {sinr:.2f} dB, path_loss: {pl:.2f} dB")
                     thr = sinr_to_mcs(sinr)[1]
                     throughputs.append(thr)
+                    total+=thr
+                    print("total: ",total)
+                totalist.append(total)
             results.append(np.mean(throughputs))
 
         elif tr_type == "beam":
@@ -1042,7 +1154,8 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
             if len(transmitting_idxs) > 1:
                 for idx in transmitting_idxs:
                     ap = aps[idx]
-                    sta = stas[idx]
+                    # sta = stas[idx]
+                    sta=stas[ap_to_sta[idx]]
                     beam_angle = angle_between(ap, sta)
                     theta_bins_rot, w_fft_dB_rot=rotate_beam_pattern(theta_bins, w_fft_dB, beam_angle)
                     gain = calculate_power_at_angle(theta_bins_rot, w_fft_dB_rot, beam_angle)
@@ -1055,9 +1168,17 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
                             int_beam_angle = angle_between(ap_int, sta)
                             int_gain = calculate_power_at_angle(theta_bins_rot, w_fft_dB_rot, int_beam_angle)
                             interf += pow(10, (Tx_PWR + int_gain - scen.path_loss(np.linalg.norm(sta - ap_int), f)) / 10)
+                            # print("dla beam gain interf to: ",int_gain, "kat interf: ", int_beam_angle," interf: ",interf)
+                    print("dla beam gain interf to: ",int_gain, "kat interf: ", int_beam_angle," interf: ",interf)
+
+
                     sinr = Tx_PWR + gain - (scen.path_loss(np.linalg.norm(sta - ap), f) + 10 * np.log10(interf + noise))
-                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB, interferencja: {interf:.2f} dB")
+                    print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB, interferencja: {np.log10(interf)} dB")
                     throughputs.append(sinr_to_mcs(sinr)[1])
+                    print("aktualny thr: ",sinr_to_mcs(sinr)[1])
+                    total+=sinr_to_mcs(sinr)[1]
+                    print("total: ",total)
+                totalist.append(total)
             else:
                 for idx in transmitting_idxs:
                     ap = aps[idx]
@@ -1068,10 +1189,14 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
                     sinr = Tx_PWR + gain - (pl + 10 * np.log10(noise))
                     print(f"Runda {i+1}: AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {beam_angle:.2f}°, SINR: {sinr:.2f} dB, gain: {gain:.2f} dB, path_loss: {pl:.2f} dB")
                     throughputs.append(sinr_to_mcs(sinr)[1])
+                    total+=sinr_to_mcs(sinr)[1]
+                    print("total: ",total)
+                totalist.append(total)
             results.append(np.mean(throughputs))
             # Wykres sumarycznego throughput po wszystkich rundach
     plt.figure(figsize=(10, 5))
     plt.plot(range(1, tr_rounds + 1), results, marker='o', linestyle='-', color='b', label='Średni throughput (Mbps)')
+    plt.plot(range(1, tr_rounds + 1), totalist, marker='s', linestyle='--', color='r', label='Total throughput (Mbps)')
     plt.xlabel("Runda")
     plt.ylabel("Średni throughput (Mbps)")
     plt.title("Sumaryczny throughput po wszystkich rundach")
@@ -1079,8 +1204,6 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
     plt.legend()
     plt.tight_layout()
     plt.show()
-
-            # # Dodatkowo: SINR, kąty, wybór AP/STA w każdej rundzie
             # print("\nSzczegóły każdej rundy:")
             # theta_bins, w_fft_dB = calculate_beam_pattern(8, 0.5, 0, np.asarray(np.linspace(-60, 60, 11)) / 360 * np.pi)
             # for i in range(tr_rounds):
@@ -1098,4 +1221,4 @@ def round_sim(tr_rounds,tr_type,aps_transmitting,seed):
             #             gain = calculate_power_at_angle(theta_bins, w_fft_dB, angle)
             #             sinr = Tx_PWR + gain - (calculations(aps).path_loss(d, f) + 10 * np.log10(noise))
             #             print(f"AP {idx} ({ap}) -> STA {idx} ({sta}), kąt: {angle:.2f}°, gain: {gain:.2f} dB, SINR: {sinr:.2f} dB")
-round_sim(10, "beam", "wszystkie", 42)
+# round_sim(100, "beam", "losowo", 40)
