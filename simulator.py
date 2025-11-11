@@ -4,7 +4,7 @@ from typing import Tuple, List, Dict
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
 from beam_pattern import calculate_beam_pattern, calculate_power_at_angle, rotate_beam_pattern, plot_beam_pattern_cartesian
-from omni2sta2ap_angle_problem import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci
+from omni2sta2ap_angle_problem import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci, plot_boxplots, plot_histograms, plot_cdf
 import random
 @dataclass
 class NetworkNode:
@@ -24,7 +24,8 @@ class TopologyGenerator:
     #     self.wall_attenuation = 7  # dB
     #     self.max_tx_power = 16  # dBm
         
-    def generate_multiroom_topology(self, 
+    def generate_multiroom_topology(self,
+                                  topo_seed: int, 
                                   grid_size: Tuple[int, int], 
                                   room_size: float,
                                   stations_per_room: int = 4) -> Dict:
@@ -39,6 +40,7 @@ class TopologyGenerator:
         Returns:
             Dict zawierający węzły, łącza i parametry topologii
         """
+        np.random.seed(topo_seed)
         rows, cols = grid_size
         nodes = []
         # walls = []
@@ -95,6 +97,7 @@ class TopologyGenerator:
         }
     
     def generate_open_space_topology(self, 
+                                   topo_seed: int,
                                    area_size: float = 75.0,
                                    num_aps: int = 4,
                                    stations_per_ap: Tuple[int, int] = (3, 4),
@@ -111,6 +114,7 @@ class TopologyGenerator:
         Returns:
             Dict zawierający węzły, łącza i parametry topologii
         """
+        np.random.seed(topo_seed)
         nodes = []
         node_id = 0
         
@@ -354,24 +358,46 @@ class TopologyGenerator:
 
     def plot_topology(self, topology_data: Dict, figsize: Tuple[int, int] = (10, 8)):
         """Wizualizuje wygenerowaną topologię"""
+        import matplotlib.patches as mpatches
+
         fig, ax = plt.subplots(figsize=figsize)
         
         nodes = topology_data['nodes']
-        # walls = topology_data['walls']
-        
-        # Rysowanie ścian
-        # for wall in walls:
-        #     (x1, y1), (x2, y2) = wall
-        #     ax.plot([x1, x2], [y1, y2], 'k-', linewidth=2, alpha=0.7)
-        
-        # Rysowanie węzłów
+        topo_type = topology_data.get('topology_type', 'open_space')
+        params = topology_data.get('parameters', {})
+
+        # Jeśli multiroom - rysujemy pokoje jako prostokąty i granice przerywaną linią
+        if topo_type == 'multiroom':
+            grid_size = params.get('grid_size', (1, 1))
+            room_size = params.get('room_size', 10.0)
+            rows, cols = grid_size
+
+            for r in range(rows):
+                for c in range(cols):
+                    x0 = c * room_size
+                    y0 = r * room_size
+                    # naprzemienne odcienie szarości
+                    shade = 0.92 if (r + c) % 2 == 0 else 0.98
+                    rect = mpatches.Rectangle((x0, y0), room_size, room_size,
+                                              facecolor=str(shade), edgecolor='none', zorder=0)
+                    ax.add_patch(rect)
+
+            # rysujemy linie graniczne między pokojami (przerywane)
+            for c in range(1, cols):
+                x = c * room_size
+                ax.plot([x, x], [0, rows * room_size], color='k', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
+            for r in range(1, rows):
+                y = r * room_size
+                ax.plot([0, cols * room_size], [y, y], color='k', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
+
+        # Rysowanie węzłów (zostawiamy nad wyświetlanymi pokojami)
         for node in nodes:
             if node.node_type == 'AP':
                 ax.scatter(node.x, node.y, c='red', s=100, marker='x', 
-                          label='AP' if node.id == min(n.id for n in nodes if n.node_type == 'AP') else "")
+                          label='AP' if node.id == min(n.id for n in nodes if n.node_type == 'AP') else "", zorder=5)
             else:
                 ax.scatter(node.x, node.y, c='blue', s=50, marker='o',
-                          label='STA' if node.id == min(n.id for n in nodes if n.node_type == 'STA') else "")
+                          label='STA' if node.id == min(n.id for n in nodes if n.node_type == 'STA') else "", zorder=5)
         
         # Rysowanie przypisań
         node_dict = {n.id: n for n in nodes}
@@ -379,20 +405,29 @@ class TopologyGenerator:
             if node.node_type == 'STA' and node.associated_ap is not None:
                 ap_node = node_dict[node.associated_ap]
                 ax.plot([node.x, ap_node.x], [node.y, ap_node.y], 
-                       'gray', alpha=0.3, linestyle='--')
+                       'gray', alpha=0.3, linestyle='--', zorder=3)
         
         ax.set_xlabel('X [m]')
         ax.set_ylabel('Y [m]')
-        ax.set_title(f'Topologia {topology_data["topology_type"]}')
+        # ax.set_title(f'Topologia {topo_type}')
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
-        
+
+        # Jeśli multiroom ustaw limity osi tak, aby objąć wszystkie pokoje
+        if topo_type == 'multiroom':
+            cols = params.get('grid_size', (1,1))[1]
+            rows = params.get('grid_size', (1,1))[0]
+            room_size = params.get('room_size', 60.0)
+            ax.set_xlim(0, cols * room_size)
+            ax.set_ylim(0, rows * room_size)
+
         plt.tight_layout()
-        plt.show()
-    
+        # plt.show()
+        plt.savefig("scenariusz.pdf",dpi=300, bbox_inches='tight')
+        plt.close("all")
         # return fig, ax
-def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: int):
+def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: int, topology_seed: int):
     np.random.seed(seed)
     f= 2.4 #GHz
     Tx_PWR = 20 # w dBm
@@ -400,18 +435,22 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
     Bp=10 # breaking point w metrach
     total_thr=0
     generator = TopologyGenerator()
-    # topology = generator.generate_multiroom_topology(
-    #     grid_size=(2, 2), 
-    #     room_size=20.0
-    # )
+    topology = generator.generate_multiroom_topology(
+        topo_seed=topology_seed,
+        grid_size=(2, 2), 
+        room_size=20.0
+    )
     # print("Topologia wielopokojowa:")
     # print(f"Liczba węzłów: {len(multiroom_topo['nodes'])}")
     # print(f"Liczba AP: {len(multiroom_topo['bipartite_graph']['A'])}")
     # print(f"Liczba STA: {len(multiroom_topo['bipartite_graph']['S'])}")
     # print(f"Liczba potencjalnych łączy: {len(multiroom_topo['bipartite_graph']['E'])}")
-    topology = generator.generate_open_space_topology()
+    # topology = generator.generate_open_space_topology()
     generator.plot_topology(topology)
     sim_totals =[]
+    per_station=[]
+    transmission_pairs = []  # Lista wszystkich par (nadawca, odbiorca)
+    receiver_sets = []  # Lista zbiorów odbiorców w każdej rundzie
     for sim in range(num_simulations):
         print(f"Symulacja {sim + 1}/{num_simulations}")
         nodes = topology['nodes']
@@ -437,12 +476,14 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
             # Posortuj AP-y po największej odległości do stacji
             ap_sta_distances.sort(key=lambda x: x[2], reverse=True)
             # Wybierz np. dwa AP-y z największymi odległościami do swoich stacji
-            selected_aps = [ap_sta_distances[0][0], ap_sta_distances[1][0]] if len(ap_sta_distances) > 1 else [ap_sta_distances[0][0]]
+            selected_aps = [ap_sta_distances[0][0], ap_sta_distances[1][0], ap_sta_distances[2][0]] if len(ap_sta_distances) > 1 else [ap_sta_distances[0][0]]
         else:
             raise ValueError("Nieznana opcja wyboru AP")
         calculations(selected_aps)
         transmissions = [(ap.id, random.choice([sta.id for sta in stations if sta.associated_ap == ap.id])) for ap in selected_aps]
         print(transmissions)
+        transmission_pairs.extend(transmissions)
+        receiver_sets.append(tuple(sorted([rx for _, rx in transmissions])))
         # print(f"Wybrane AP do analizy: {[ap for ap in selected_aps]}")
         for link in transmissions:
             target_link = (link[0], link[1])
@@ -450,6 +491,7 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
             sta_node = node_dict[link[1]]
             ap=np.array([ap_node.x,ap_node.y])
             sta=np.array([sta_node.x,sta_node.y])
+            print(f"ap : {ap}, stacja: {sta}")
             d=np.linalg.norm(sta-ap)
             angle = generator.calculate_angle(ap_node,sta_node)
             if pattern_type == "beam":
@@ -470,13 +512,24 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
                 interference=0.0
             sinr = Tx_PWR + gain - (pl + 10 * np.log10(interference+noise))
             thr = calculations.sinr_to_mcs(sinr)[1]
+            per_station.append(thr)
             round_thr+=thr
             total_thr+=round_thr
             print(f"Kąt do STA: {angle:.2f}°, odległość: {d}, zysk anteny: {gain:.2f} dB, path loss: {pl:.2f} dB, interf: {10*np.log10(interference):.2f} dBm, SINR: {sinr:.2f} dB, przepustowość: {thr} Mbps")
         print("-----Całkowita przepustowość po ",sim,"rundzie to :",round_thr,"-----")
         sim_totals.append(round_thr)
+    plot_histograms(transmission_pairs,receiver_sets,pattern_type,ap_selection,seed,num_simulations)
+    # print(f"\nNajczęściej wybierane pary (top 10):")
+    # for i, ((tx, rx), count) in enumerate(sorted_pairs[:10], 1):
+    #     freq = count / total_transmissions * 100
+    #     print(f"{i}. Para ({tx}, {rx}): {freq:.2f}%")
+
+    # print(f"\nNajczęściej wybierane zbiory odbiorców (top 10):")
+    # for i, (rx_set, count) in enumerate(sorted_sets[:10], 1):
+    #     freq = count / total_sets * 100
+    #     print(f"{i}. Zbiór {rx_set}: {freq:.2f}%")
     final=total_thr/num_simulations
-    return float(np.mean(sim_totals)),sim_totals
+    return float(np.mean(sim_totals)),sim_totals,per_station
         # for ap in selected_aps:
         #     print(f"Analiza AP {idx} na pozycji ({ap.x:.2f}, {ap.y:.2f})")
         #     # else:
@@ -488,20 +541,20 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
         #     print(f"Wybrana stacja: {sta_picked.id} na pozycji ({sta_picked.x:.2f}, {sta_picked.y:.2f})")
         #     d=np.linalg.norm([ap.x - sta_picked.x, ap.y - sta_picked.y])
         #     print(f"  STA {sta_picked} na pozycji ({sta_picked.x:.2f}, {sta_picked.y:.2f}), odległość do AP: {d:.2f} m")
-# omni_rand=round_sim(10, "omni", "losowo", 38)[1]
-# beam_rand=round_sim(10, "beam", "losowo", 39)[1]
-omni_sing=round_sim(15, "omni", "pojedyncze", 39)[1]
-beam_sing=round_sim(15, "beam", "pojedyncze", 39)[1]
-# omni_todo=round_sim(3, "omni", "wszystkie", 40)
-# beam_todo=round_sim(3, "beam", "wszystkie", 40)
-# omni_inte=round_sim(3, "omni", "inteligentnie", 40)
-# beam_inte=round_sim(3, "beam", "inteligentnie", 40)
-print(beam_sing)
-# results=[omni_rand,beam_rand,omni_sing,beam_sing,omni_todo,beam_todo,omni_inte,beam_inte]
-# labels = ["Omni losowo", "Beam losowo",
-#         "Omni pojedyncze",  "Beam pojedyncze",
-#         "Omni wszystkie", "Beam wszystkie",
-#         "Omni inteligentnie", "Beam inteligentnie"]
+# omni_rand=round_sim(100, "omni", "losowo", 34,34)[1]
+# beam_rand=round_sim(100, "beam", "losowo", 34,34)[1]
+# omni_sing=round_sim(100, "omni", "pojedyncze", 34,34)[1]
+# beam_sing=round_sim(100, "beam", "pojedyncze", 34,34)[1]
+# omni_todo=round_sim(100, "omni", "wszystkie", 37)[1]
+# beam_todo=round_sim(100, "beam", "wszystkie", 37)[1]
+# omni_inte=round_sim(100, "omni", "inteligentnie", 37)[1]
+# beam_inte=round_sim(100, "beam", "inteligentnie", 37)[1]
+# print(beam_sing)
+# results=[beam_rand,omni_rand,beam_sing,omni_sing,beam_todo,omni_todo,beam_inte,omni_inte]
+# labels = ["Omni random", "Beam random",
+#         "Omni single",  "Beam single",
+#         "Omni all", "Beam all",
+#         "Omni intelligent", "Beam intelligent"]
 
 # plt.figure(figsize=(10, 6))
 # plt.bar(labels, results, color='skyblue')
@@ -511,4 +564,14 @@ print(beam_sing)
 # plt.grid(axis='y', linestyle='--', alpha=0.7)
 # plt.tight_layout()
 # plt.show()
-plot_means_with_ci([omni_sing,beam_sing],["omni_sing","beam_sing"])
+def multiple_sims(num_sim):
+    cdf_results=[]
+    for i in range(1,num_sim):
+        result=round_sim(100,"beam","losowo",i,34)[2]
+        cdf_results+=result
+    plot_cdf(cdf_results)
+multiple_sims(16)
+# plot_means_with_ci(results,["beam_rand","omni_rand","beam_sing","omni_sing","beam_all","omni_all","beam_inte","omni_inte"])
+# plot_means_with_ci([beam_sing,omni_sing],["beamforming single","omni single"])
+# plot_means_with_ci([beam_todo,omni_todo,beam_inte,omni_inte],["beamforming all","omni all","beamforming intelligently","omni intelligently"])
+# plot_boxplots([beam_sing,omni_sing],["beam_sing","omni_sing"])
