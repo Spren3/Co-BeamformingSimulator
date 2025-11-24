@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.fft import fft, fftshift
 
 # Parametry anteny
-Nr = 12  # Liczba elementów anteny
+Nr = 8  # Liczba elementów anteny
 d = 0.5  # Odległość między elementami anteny (w długościach fali)
 theta_soi = 0 / 360 * np.pi  # SOI na 0 stopni (główna wstęga)
 nulls_deg = np.linspace(-60, 60, 11)  # Nulle (5 po każdej stronie)
@@ -22,7 +22,7 @@ def calculate_beam_pattern(Nr, d, theta_soi, nulls_rad):
     w = np.conj(w)
     w_padded = np.concatenate((w.squeeze(), np.zeros(N_fft - Nr)))
     w_fft_dB = 10 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(w_padded)))**2)
-    w_fft_dB -= 8
+    w_fft_dB -= 3
     theta_bins = np.linspace(-np.pi, np.pi, N_fft)
     return theta_bins, w_fft_dB
 
@@ -35,26 +35,26 @@ def rotate_beam_pattern(theta_bins, w_fft_dB, rotation_deg):
 
 # Funkcja do obliczania mocy w danym kierunku
 def calculate_power_at_angle(theta_bins, w_fft_dB, target_angle_deg):
-    target_angle_rad = target_angle_deg / 360 * np.pi
+    # target_angle_rad = target_angle_deg / 360 * np.pi
+    target_angle_rad = np.deg2rad(target_angle_deg)
     idx = np.argmin(np.abs(theta_bins - target_angle_rad))
     return w_fft_dB[idx]
 
 # Funkcja do rysowania wzoru promieniowania
 def plot_beam_pattern(theta_bins, w_fft_dB, theta_soi_deg, nulls_deg):
     fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
-    ax.plot(theta_bins, w_fft_dB, label="Wzór promieniowania")
+    ax.plot(theta_bins, w_fft_dB, label="Pattern")
     # for null_deg in nulls_deg:
     #     ax.plot([null_deg], [10], 'or')  # Czerwona kropka na wysokości 10 dB
-    ax.plot([theta_soi_deg / 360 * np.pi], [np.max(w_fft_dB)], 'og', label="Główna wiązka")  # Zielona kropka dla głównej wiązki
+    ax.plot([theta_soi_deg / 360 * np.pi], [np.max(w_fft_dB)], 'og', label="Main beam")  # Zielona kropka dla głównej wiązki
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
     ax.set_thetagrids(np.arange(0, 360, 30))
     ax.set_ylim([-30, 15])  # Zakres zysku
     ax.legend(loc="upper right")
     plt.show()
-
 # Przykład użycia
-theta_soi_deg = 300  # Kąt głównej wiązki (np. STA1)
+theta_soi_deg = 0  # Kąt głównej wiązki (np. STA1)
 theta_bins, w_fft_dB = calculate_beam_pattern(Nr, d, theta_soi, nulls_rad)
 theta_bins_rotated, w_fft_dB_rotated = rotate_beam_pattern(theta_bins, w_fft_dB, theta_soi_deg)
 
@@ -82,7 +82,7 @@ def plot_beam_pattern_cartesian(theta_bins, w_fft_dB):
     oś X: kąt w stopniach (0-360), oś Y: poziom wzmocnienia (dB)
     """
     angles_deg = (np.degrees(theta_bins) + 360) % 360
-    print("Kąty w stopniach:", angles_deg, "zyski w dB:", w_fft_dB)
+    # print("Kąty w stopniach:", angles_deg, "zyski w dB:", w_fft_dB)
     plt.figure(figsize=(10, 5))
     plt.plot(angles_deg, w_fft_dB)
     plt.xlabel("Kąt (stopnie)")
@@ -123,5 +123,3 @@ def check_beam_symmetry(theta_bins, w_fft_dB):
     plt.title("Symetria lustrzana względem 180° wzoru promieniowania anteny")
     plt.grid(True)
     plt.show()
-
-# check_beam_symmetry(theta_bins_rotated, w_fft_dB_rotated)
