@@ -4,8 +4,214 @@ from typing import Tuple, List, Dict
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
 from beam_pattern import calculate_beam_pattern, calculate_power_at_angle, rotate_beam_pattern, plot_beam_pattern_cartesian
-from omni2sta2ap_angle_problem import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci, plot_boxplots, plot_histograms, plot_cdf
+from basic_scenarios import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci, plot_boxplots, plot_histograms, plot_cdf
 import random
+
+@dataclass
+class Config:
+    num_bss: int
+    num_antennas: int
+    seed: int
+    min_num_stas: int = 3
+    max_num_stas: int = 4
+    max_steps_episode: int = 2000
+    channel_freq: float = 2.4
+    bw_mhz: float = 20.0
+    tx_power_dbm: float = 20.0
+    noise_mw: float = 4e-10
+    area_size: float = 75.0
+    topology_seed: int = 0
+
+class Sim:
+    def __init__(self, config: Config):
+        self.config = config
+        self.num_bs = config.num_bss
+        self.num_antennas = config.num_antennas
+        self.channel_freq = config.channel_freq
+        self.bw_mhz = config.bw_mhz
+        self.tx_power_dbm = config.tx_power_dbm
+        self.noise_mw = config.noise_mw
+        self.max_steps_episode = config.max_steps_episode
+        self.area_size = config.area_size
+        self.topology_seed = config.topology_seed or config.seed
+
+        self.num_subcarriers = 32
+        self.element_spacing = 0.5
+        self.k_factor = 10.0
+
+        self._generator = TopologyGenerator()
+        self.num_steps = 0
+        self.reset()
+
+    def get_spaces(self):
+        action_dim = self.num_bs * min(max(1, self.num_antennas - 1), max(1, self.num_bs - 1))
+        state_dim = self.num_bs * self.num_bs * 2
+        return action_dim, state_dim
+
+    def _build_topology(self):
+        self.topology = self._generator.generate_open_space_topology(
+            topo_seed=self.topology_seed,
+            area_size=self.area_size,
+            num_aps=self.num_bs,
+            stations_per_ap=(self.config.min_num_stas, self.config.max_num_stas),
+        )
+        self.nodes = self.topology['nodes']
+        self.node_dict = {node.id: node for node in self.nodes}
+        self.aps = [node for node in self.nodes if node.node_type == 'AP']
+        self.stas = [node for node in self.nodes if node.node_type == 'STA']
+        self.stas_by_ap = {
+            ap.id: [sta for sta in self.stas if sta.associated_ap == ap.id]
+            for ap in self.aps
+        }
+
+    def reset(self):
+        self.num_steps = 0
+        self.csi_features = []
+        self.csi_labels = []
+        self._build_topology()
+        return self.get_observation()
+
+    def _get_active_stas(self):
+        active_stas = []
+        for ap in self.aps:
+            stas_for_ap = self.stas_by_ap.get(ap.id, []) or self.stas
+            index = self.num_steps % len(stas_for_ap)
+            active_stas.append(stas_for_ap[index])
+        return active_stas
+
+    def get_observation(self):
+        obs = np.zeros((self.num_bs, self.num_bs * 2), dtype=np.float32)
+        active_stas = self._get_active_stas()
+        for i, ap in enumerate(self.aps):
+            target_sta = active_stas[i]
+            wanted_angle = self._generator.calculate_angle(ap, target_sta) / 360.0
+            wanted_dist = np.linalg.norm(np.array([ap.x, ap.y]) - np.array([target_sta.x, target_sta.y]))
+            wanted_pl = self.dist_to_normalized_pl(path_loss_db(wanted_dist, self.channel_freq))
+            interferers = []
+            for j, other_ap in enumerate(self.aps):
+                if j == i:
+                    continue
+                other_sta = active_stas[j]
+                angle = self._generator.calculate_angle(ap, other_sta) / 360.0
+                dist = np.linalg.norm(np.array([ap.x, ap.y]) - np.array([other_sta.x, other_sta.y]))
+                pl = self.dist_to_normalized_pl(path_loss_db(dist, self.channel_freq))
+                interferers.append([angle, pl])
+            obs[i, :] = np.concatenate(([wanted_angle, wanted_pl], np.array(interferers).flatten()))
+        return obs
+
+    def dist_to_normalized_pl(self, pl_db: float) -> float:
+        thr = 100.0
+        normalized_pl = (thr - pl_db) / (thr / 2)
+        return float(np.clip(normalized_pl, 0.0, 1.0))
+
+    def step(self, action: np.ndarray):
+        assert action.shape[0] == self.num_bs
+        assert action.shape[1] == min(max(1, self.num_antennas - 1), max(1, self.num_bs - 1))
+        active_stas = self._get_active_stas()
+        rates = []
+
+        for i, ap in enumerate(self.aps):
+            target_sta = active_stas[i]
+            beam_angle = self._generator.calculate_angle(ap, target_sta)
+            null_angles = action[i]
+            null_angles = null_angles[~np.isnan(null_angles)] if null_angles.size else null_angles
+            nulls_rad = np.asarray(null_angles * 360.0 / 360.0) / 360.0 * np.pi if null_angles.size else np.array([])
+            theta_bins, w_fft_dB = calculate_beam_pattern(
+                self.num_antennas, 0.5, 0, nulls_rad
+            )
+            theta_rotated, w_fft_dB_rotated = rotate_beam_pattern(theta_bins, w_fft_dB, beam_angle)
+            tx_gain_db = calculate_power_at_angle(theta_rotated, w_fft_dB_rotated, beam_angle)
+
+            dist = np.linalg.norm(np.array([ap.x, ap.y]) - np.array([target_sta.x, target_sta.y]))
+            pl_db = path_loss_db(dist, self.channel_freq)
+
+            interference_mw = 0.0
+            for j, interfering_ap in enumerate(self.aps):
+                if j == i:
+                    continue
+                interfering_sta = active_stas[j]
+                curr_null_angles = action[j]
+                curr_null_angles = curr_null_angles[~np.isnan(curr_null_angles)] if curr_null_angles.size else curr_null_angles
+                curr_nulls_rad = np.asarray(curr_null_angles * 360.0 / 360.0) / 360.0 * np.pi if curr_null_angles.size else np.array([])
+                int_theta_bins, int_w_fft_dB = calculate_beam_pattern(
+                    self.num_antennas, 0.5, 0, curr_nulls_rad
+                )
+                int_beam_angle = self._generator.calculate_angle(interfering_ap, interfering_sta)
+                int_theta_rot, int_w_fft_dB_rot = rotate_beam_pattern(
+                    int_theta_bins, int_w_fft_dB, int_beam_angle
+                )
+                interference_angle = self._generator.calculate_angle(interfering_ap, target_sta)
+                interference_gain_db = calculate_power_at_angle(
+                    int_theta_rot, int_w_fft_dB_rot, interference_angle
+                )
+                int_dist = np.linalg.norm(np.array([interfering_ap.x, interfering_ap.y]) - np.array([target_sta.x, target_sta.y]))
+                received_power_dbm = self.tx_power_dbm + interference_gain_db - path_loss_db(int_dist, self.channel_freq)
+                interference_mw += 10 ** (received_power_dbm / 10)
+
+            sinr_db = self.tx_power_dbm + tx_gain_db - (
+                pl_db + 10 * np.log10(interference_mw + self.noise_mw)
+            )
+            rate = max(0.1, np.log2(1 + 10 ** (sinr_db / 10)) * 10.0)
+            rates.append(rate)
+
+            csi = generate_csi_vector(
+                np.array([ap.x, ap.y]),
+                np.array([target_sta.x, target_sta.y]),
+                num_antennas=self.num_antennas,
+                num_subcarriers=self.num_subcarriers,
+                freq_ghz=self.channel_freq,
+                element_spacing=self.element_spacing,
+                k_factor=self.k_factor,
+                seed=int(self.config.seed + self.num_steps + i + target_sta.id if hasattr(target_sta, 'id') else self.config.seed + self.num_steps + i),
+            )
+            beam_weights = steering_vector(self.num_antennas, self.element_spacing, beam_angle)
+            effective_csi = apply_beamforming(csi, beam_weights)
+            interference_db = 10 * np.log10(interference_mw + self.noise_mw)
+            feature = build_feature_vector(
+                np.array([ap.x, ap.y]),
+                np.array([target_sta.x, target_sta.y]),
+                dist,
+                beam_angle,
+                pl_db,
+                tx_gain_db,
+                interference_db,
+                sinr_db,
+                rate,
+                effective_csi,
+            )
+            self.csi_features.append(feature)
+            self.csi_labels.append(rate)
+
+
+        reward = float(np.sum(np.log2(np.maximum(rates, 1e-6))))
+        self.num_steps += 1
+        obs = self.get_observation()
+        done = self.num_steps >= self.max_steps_episode
+        return obs, reward, done, {}
+
+    def close(self):
+        return None
+
+    def get_csi_dataset(self, use_pandas: bool = False, pandas_mode: str = 'mag_phase'):
+        features = (
+            np.vstack(self.csi_features)
+            if self.csi_features
+            else np.zeros((0, 7 + 2 * self.num_subcarriers * self.num_antennas), dtype=np.float32)
+        )
+        labels = np.array(self.csi_labels, dtype=np.float32)
+        if use_pandas:
+            return csi_dataset_to_dataframe(
+                features,
+                labels,
+                self.num_subcarriers,
+                self.num_antennas,
+                mode=pandas_mode,
+            )
+        return {
+            'features': features,
+            'labels': labels,
+        }
+
 @dataclass
 class NetworkNode:
     """Reprezentuje węzeł sieci (AP lub STA)"""
@@ -22,7 +228,6 @@ class TopologyGenerator:
     #     # Parametry z dokumentu
     #     self.noise_floor = -94  # dBm
     #     self.wall_attenuation = 7  # dB
-    #     self.max_tx_power = 16  # dBm
         
     def generate_multiroom_topology(self,
                                   topo_seed: int, 
@@ -382,7 +587,7 @@ class TopologyGenerator:
                                               facecolor=str(shade), edgecolor='none', zorder=0)
                     ax.add_patch(rect)
 
-            # rysujemy linie graniczne między pokojami (przerywane)
+            # rysujemy przerywane linie graniczne między pokojami
             for c in range(1, cols):
                 x = c * room_size
                 ax.plot([x, x], [0, rows * room_size], color='k', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
@@ -390,7 +595,7 @@ class TopologyGenerator:
                 y = r * room_size
                 ax.plot([0, cols * room_size], [y, y], color='k', linestyle='--', linewidth=0.8, alpha=0.6, zorder=1)
 
-        # Rysowanie węzłów (zostawiamy nad wyświetlanymi pokojami)
+        # Rysowanie węzłów
         for node in nodes:
             if node.node_type == 'AP':
                 ax.scatter(node.x, node.y, c='red', s=100, marker='x', 
@@ -409,7 +614,6 @@ class TopologyGenerator:
         
         ax.set_xlabel('X [m]')
         ax.set_ylabel('Y [m]')
-        # ax.set_title(f'Topologia {topo_type}')
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
@@ -423,40 +627,55 @@ class TopologyGenerator:
             ax.set_ylim(0, rows * room_size)
 
         plt.tight_layout()
-        # plt.show()
         plt.savefig("scenariusz.pdf",dpi=300, bbox_inches='tight')
         plt.close("all")
         # return fig, ax
-def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: int, topology_seed: int):
+def round_sim(
+    num_simulations: int,
+    pattern_type: str,
+    ap_selection: str,
+    seed: int,
+    topology_seed: int,
+    record_csi: bool = False,
+    num_subcarriers: int = 32,
+    use_pandas: bool = False,
+    pandas_mode: str = 'mag_phase',
+):
     np.random.seed(seed)
     f= 2.4 #GHz
     Tx_PWR = 20 # w dBm
     noise=0.0000000004
     Bp=10 # breaking point w metrach
     total_thr=0
+    dataset_features = []
+    dataset_labels = []
+    dataframes = []
     generator = TopologyGenerator()
     topology = generator.generate_multiroom_topology(
         topo_seed=topology_seed,
         grid_size=(2, 2), 
-        room_size=20.0
+        room_size=60.0
     )
     # print("Topologia wielopokojowa:")
     # print(f"Liczba węzłów: {len(multiroom_topo['nodes'])}")
     # print(f"Liczba AP: {len(multiroom_topo['bipartite_graph']['A'])}")
     # print(f"Liczba STA: {len(multiroom_topo['bipartite_graph']['S'])}")
     # print(f"Liczba potencjalnych łączy: {len(multiroom_topo['bipartite_graph']['E'])}")
-    # topology = generator.generate_open_space_topology()
+    # topology = generator.generate_open_space_topology(topology_seed)
     generator.plot_topology(topology)
     sim_totals =[]
-    per_station=[]
+    per_station={}
     transmission_pairs = []  # Lista wszystkich par (nadawca, odbiorca)
     receiver_sets = []  # Lista zbiorów odbiorców w każdej rundzie
+    nodes = topology['nodes']
+    node_dict={n.id: n for n in nodes}
+    aps = [n for n in nodes if n.node_type == 'AP']
+    stations = [n for n in nodes if n.node_type == 'STA']
+    all_station_ids = [sta.id for sta in stations]
+    per_station = {sta_id: [] for sta_id in all_station_ids}
+    print("TESTOWO slownik per station: ",per_station)
     for sim in range(num_simulations):
         print(f"Symulacja {sim + 1}/{num_simulations}")
-        nodes = topology['nodes']
-        node_dict={n.id: n for n in nodes}
-        aps = [n for n in nodes if n.node_type == 'AP']
-        stations = [n for n in nodes if n.node_type == 'STA']
         round_thr=0.0
         # Wybór AP do analizy
         if ap_selection == "pojedyncze":
@@ -472,11 +691,14 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
             for ap in aps:
                 sta_distances = [(sta, np.sqrt((ap.x - sta.x) ** 2 + (ap.y - sta.y) ** 2)) for sta in stations]
                 max_sta, max_dist = max(sta_distances, key=lambda x: x[1])
+                # print(max_sta,max_dist)
                 ap_sta_distances.append((ap, max_sta, max_dist))
             # Posortuj AP-y po największej odległości do stacji
             ap_sta_distances.sort(key=lambda x: x[2], reverse=True)
+            # print(ap_sta_distances)
             # Wybierz np. dwa AP-y z największymi odległościami do swoich stacji
-            selected_aps = [ap_sta_distances[0][0], ap_sta_distances[1][0], ap_sta_distances[2][0]] if len(ap_sta_distances) > 1 else [ap_sta_distances[0][0]]
+            selected_aps = [ap_sta_distances[0][0], ap_sta_distances[1][0],ap_sta_distances[2][0]] if len(ap_sta_distances) > 1 else [ap_sta_distances[0][0]]
+            # print("selected APS:",selected_aps)
         else:
             raise ValueError("Nieznana opcja wyboru AP")
         calculations(selected_aps)
@@ -484,11 +706,13 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
         print(transmissions)
         transmission_pairs.extend(transmissions)
         receiver_sets.append(tuple(sorted([rx for _, rx in transmissions])))
+        round_throughputs = {}
         # print(f"Wybrane AP do analizy: {[ap for ap in selected_aps]}")
         for link in transmissions:
             target_link = (link[0], link[1])
             ap_node = node_dict[link[0]]
             sta_node = node_dict[link[1]]
+            sta_id=link[1]
             ap=np.array([ap_node.x,ap_node.y])
             sta=np.array([sta_node.x,sta_node.y])
             print(f"ap : {ap}, stacja: {sta}")
@@ -512,24 +736,41 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
                 interference=0.0
             sinr = Tx_PWR + gain - (pl + 10 * np.log10(interference+noise))
             thr = calculations.sinr_to_mcs(sinr)[1]
-            per_station.append(thr)
+            # if sta_id not in per_station:
+            #     per_station[sta_id]=[]
+            # per_station[sta_id].append(thr)
             round_thr+=thr
             total_thr+=round_thr
             print(f"Kąt do STA: {angle:.2f}°, odległość: {d}, zysk anteny: {gain:.2f} dB, path loss: {pl:.2f} dB, interf: {10*np.log10(interference):.2f} dBm, SINR: {sinr:.2f} dB, przepustowość: {thr} Mbps")
         print("-----Całkowita przepustowość po ",sim,"rundzie to :",round_thr,"-----")
         sim_totals.append(round_thr)
+        for sta_id in all_station_ids:
+            if sta_id in round_throughputs:
+                per_station[sta_id].append(round_throughputs[sta_id])
+            else:
+                per_station[sta_id].append(0.0)
     plot_histograms(transmission_pairs,receiver_sets,pattern_type,ap_selection,seed,num_simulations)
     # print(f"\nNajczęściej wybierane pary (top 10):")
     # for i, ((tx, rx), count) in enumerate(sorted_pairs[:10], 1):
     #     freq = count / total_transmissions * 100
     #     print(f"{i}. Para ({tx}, {rx}): {freq:.2f}%")
-
     # print(f"\nNajczęściej wybierane zbiory odbiorców (top 10):")
     # for i, (rx_set, count) in enumerate(sorted_sets[:10], 1):
     #     freq = count / total_sets * 100
     #     print(f"{i}. Zbiór {rx_set}: {freq:.2f}%")
+    # station_avg_thr = []
+    # for sta_id, throughputs in per_station.items():
+    #     avg_thr = np.mean(throughputs)
+    #     station_avg_thr.append(avg_thr)
+    station_avg_thr = []
+    for sta_id in all_station_ids:
+        throughputs = per_station[sta_id]
+        avg_thr = np.mean(throughputs)
+        station_avg_thr.append(avg_thr)
+        # print(f"Stacja {sta_id}: średni throughput = {avg_thr:.2f} Mbps (z {len(throughputs)} symulacji, "f"{sum(1 for t in throughputs if t > 0)} transmisji)")
     final=total_thr/num_simulations
-    return float(np.mean(sim_totals)),sim_totals,per_station
+    return float(np.mean(sim_totals)), sim_totals, station_avg_thr
+    return float(np.mean(sim_totals)), sim_totals, station_avg_thr, dataframes
         # for ap in selected_aps:
         #     print(f"Analiza AP {idx} na pozycji ({ap.x:.2f}, {ap.y:.2f})")
         #     # else:
@@ -545,32 +786,89 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
 # beam_rand=round_sim(100, "beam", "losowo", 34,34)[1]
 # omni_sing=round_sim(100, "omni", "pojedyncze", 34,34)[1]
 # beam_sing=round_sim(100, "beam", "pojedyncze", 34,34)[1]
-# omni_todo=round_sim(100, "omni", "wszystkie", 37)[1]
-# beam_todo=round_sim(100, "beam", "wszystkie", 37)[1]
-# omni_inte=round_sim(100, "omni", "inteligentnie", 37)[1]
-# beam_inte=round_sim(100, "beam", "inteligentnie", 37)[1]
-# print(beam_sing)
-# results=[beam_rand,omni_rand,beam_sing,omni_sing,beam_todo,omni_todo,beam_inte,omni_inte]
-# labels = ["Omni random", "Beam random",
-#         "Omni single",  "Beam single",
-#         "Omni all", "Beam all",
-#         "Omni intelligent", "Beam intelligent"]
+# omni_todo=round_sim(100, "omni", "wszystkie", 34,34)[1]
+if __name__ == '__main__':
+    beam_todo = round_sim(100, "beam", "wszystkie", 70, 34, True, 32, True)[3]
+    print(beam_todo)
+    # beam_todo = round_sim(100, "beam", "wszystkie", 34, 34)[1]
+    # omni_inte = round_sim(100, "omni", "inteligentnie", 37)[1]
+    # beam_inte = round_sim(100, "beam", "inteligentnie", 37)[1]
+    # results = [beam_rand, omni_rand, beam_sing, omni_sing, beam_todo, omni_todo, beam_inte, omni_inte]
+    # labels = ["Omni random", "Beam random",
+    #         "Omni single",  "Beam single",
+    #         "Omni all", "Beam all",
+    #         "Omni intelligent", "Beam intelligent"]
 
-# plt.figure(figsize=(10, 6))
-# plt.bar(labels, results, color='skyblue')
-# plt.xlabel('Parametry wejściowe')
-# plt.ylabel('Wynik funkcji')
-# plt.title('Wyniki funkcji dla różnych parametrów')
-# plt.grid(axis='y', linestyle='--', alpha=0.7)
-# plt.tight_layout()
-# plt.show()
+    # plt.figure(figsize=(10, 6))
+    # plt.bar(labels, results, color='skyblue')
+    # plt.xlabel('Parametry wejściowe')
+    # plt.ylabel('Wynik funkcji')
+    # plt.title('Wyniki funkcji dla różnych parametrów')
+    # plt.grid(axis='y', linestyle='--', alpha=0.7)
+    # plt.tight_layout()
+    # plt.show()
 def multiple_sims(num_sim):
     cdf_results=[]
-    for i in range(1,num_sim):
-        result=round_sim(100,"beam","losowo",i,34)[2]
-        cdf_results+=result
-    plot_cdf(cdf_results)
-multiple_sims(16)
+    cdf_results2=[]
+    cdf_results3=[]
+    cdf_results4=[]
+    omni_todo=[]
+    beam_todo=[]
+    omni_inte=[]
+    beam_inte=[]
+    beam_sing=[]
+    omni_sing=[]
+    beam_rand=[]
+    omni_rand=[]
+    for i in range(700,num_sim+900):
+        # result=round_sim(100,"beam","pojedyncze",i,34)[2]
+        # result=round_sim(100,"beam","inteligentnie",i,34)[2]
+        # result=round_sim(100,"beam","wszystkie",i,34)[2]
+        # result=round_sim(100,"beam","losowo",i,34)[2]
+        # cdf_results+=result
+        # result2=round_sim(100,"omni","pojedyncze",i,34)[2]
+        # result2=round_sim(100,"omni","inteligentnie",i,34)[2]
+        # result2=round_sim(100,"omni","losowo",i,34)[2]
+        # cdf_results2+=result2
+        # result3=round_sim(100,"beam","wszystkie",i,34)[2]
+        # cdf_results3+=result3
+        # result4=round_sim(100,"omni","wszystkie",i,34)[2]
+        # cdf_results4+=result4
+        ### seed 34 do topologii 4.3 -------
+        ### ------- DO BOXPLOTOW CHAPTER 5
+        j=200+i
+        # omni_rand.append(round_sim(100, "omni", "losowo", i,j)[0])
+        # beam_rand.append(round_sim(100, "beam", "losowo", i,j)[0])
+        # omni_sing.append(round_sim(100, "omni", "pojedyncze", i,j)[0])
+        # beam_sing.append(round_sim(100, "beam", "pojedyncze", i,j)[0])
+        # omni_todo.append(round_sim(100, "omni", "wszystkie", i,j)[0])
+        # beam_todo.append(round_sim(100, "beam", "wszystkie", i,j)[0])
+        # omni_inte.append(round_sim(100, "omni", "inteligentnie", i,j)[0])
+        # beam_inte.append(round_sim(100, "beam", "inteligentnie", i,j)[0])
+        #### BARCHARTY CHAPTER 4
+        # omni_rand+=round_sim(100, "omni", "losowo", i,34)[1]
+        # beam_rand+=round_sim(100, "beam", "losowo", i,34)[1]
+        # omni_sing+=round_sim(100, "omni", "pojedyncze", i,34)[1]
+        # beam_sing+=round_sim(100, "beam", "pojedyncze", i,34)[1]
+        # omni_todo+=round_sim(100, "omni", "wszystkie", i,34)[1]
+        # beam_todo+=round_sim(100, "beam", "wszystkie", i,34)[1]
+        beam_todo+=round_sim(100, "beam", "wszystkie", i,34,True,32,True)[1]
+        # omni_inte+=round_sim(100, "omni", "inteligentnie", i,34)[1]
+        # beam_inte+=round_sim(100, "beam", "inteligentnie", i,34)[1]
+    # plot_means_with_ci([omni_sing,beam_sing],["omni single","beam single"])  
+    # plot_means_with_ci([omni_sing,beam_sing,omni_rand,beam_rand],["omni single","beam single","omni random","beamforming random"])
+    # plot_means_with_ci([omni_rand,beam_rand,omni_todo,beam_todo],["omni random","beamforming random","omni all","beamforming all"])
+    # plot_means_with_ci([omni_todo,beam_todo,omni_inte,beam_inte],["omni all","beamforming all","omni heuristic","beamforming heuristic"])
+    # results=[omni_sing,beam_sing,omni_rand,beam_rand,omni_todo,beam_todo,omni_inte,beam_inte]
+    # labels = ["Beamforming single", "omni single",
+        # "Beamforming random", "Omni random",
+        # "Beamforming all", "Omni all",
+        # "Beamforming intelligent","Omni intelligent"]
+    # labels=["Single (O)", "Single (B)", "Random (O)", "Random (B)","All (O)", "All (B)","Heuristic (O)", "Heuristic (B)"]
+    # plot_boxplots(results,labels)
+    # plot_cdf(cdf_results,cdf_results2,cdf_results3,cdf_results4)
+# if __name__ == "__main__":
+#     multiple_sims(1)
 # plot_means_with_ci(results,["beam_rand","omni_rand","beam_sing","omni_sing","beam_all","omni_all","beam_inte","omni_inte"])
 # plot_means_with_ci([beam_sing,omni_sing],["beamforming single","omni single"])
 # plot_means_with_ci([beam_todo,omni_todo,beam_inte,omni_inte],["beamforming all","omni all","beamforming intelligently","omni intelligently"])
