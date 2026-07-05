@@ -7,13 +7,118 @@ from beam_pattern import calculate_beam_pattern, calculate_power_at_angle, rotat
 from basic_scenarios import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci, plot_boxplots, plot_histograms, plot_cdf
 import random
 
+
+def path_loss_db(distance_m: float, f: float) -> float:
+    """Free-space path loss in dB for a distance in meters and frequency in GHz."""
+    P=35*np.log10(distance_m/10)
+    path_loss=40.05 + 20*np.log10((min(distance_m,10)*f)/2.4)
+    if distance_m > 10:
+        path_loss+=P
+    return path_loss
+
+
+def steering_vector(num_antennas: int, element_spacing: float, angle_deg: float) -> np.ndarray:
+    """Steering vector for a ULA at the specified angle in degrees."""
+    n = np.arange(num_antennas, dtype=np.float64)
+    angle_rad = np.deg2rad(angle_deg)
+    return np.exp(1j * 2.0 * np.pi * element_spacing * n * np.sin(angle_rad))
+
+
+def generate_csi_vector(
+    tx_pos: np.ndarray,
+    rx_pos: np.ndarray,
+    num_antennas: int,
+    num_subcarriers: int,
+    freq_ghz: float,
+    element_spacing: float,
+    k_factor: float,
+    seed: int,
+) -> np.ndarray:
+    """Generate a simple channel state information matrix for one BS-STA pair."""
+    rng = np.random.default_rng(seed)
+    distance_m = float(np.linalg.norm(tx_pos - rx_pos))
+    angle_deg = float(np.mod(np.degrees(np.arctan2(rx_pos[1] - tx_pos[1], rx_pos[0] - tx_pos[0])), 360.0))
+    steering = steering_vector(num_antennas, element_spacing, angle_deg)
+
+    pl_db = path_loss_db(distance_m, freq_ghz)
+    los_gain = 10 ** (-pl_db / 20.0)
+    subcarrier_freqs = np.linspace(freq_ghz * 1e9 - 1e6, freq_ghz * 1e9 + 1e6, num_subcarriers)
+    csi = np.zeros((num_subcarriers, num_antennas), dtype=np.complex128)
+
+    c = 3e8
+    for s, f in enumerate(subcarrier_freqs):
+        delay_phase = 2.0 * np.pi * f * (distance_m / c)
+        los_component = np.exp(1j * delay_phase) * steering
+        nlos_component = (rng.normal(scale=0.05, size=num_antennas) +
+                          1j * rng.normal(scale=0.05, size=num_antennas))
+        weight_los = np.sqrt(k_factor / (k_factor + 1.0))
+        weight_nlos = np.sqrt(1.0 / (k_factor + 1.0))
+        csi[s, :] = los_gain * (weight_los * los_component + weight_nlos * nlos_component)
+
+    return csi
+
+
+def apply_beamforming(csi: np.ndarray, beam_weights: np.ndarray) -> np.ndarray:
+    """Apply beamforming weights to the CSI and return the effective channel per subcarrier."""
+    return np.einsum('sa,a->s', np.asarray(csi), np.asarray(beam_weights))
+
+
+def build_feature_vector(
+    ap_pos: np.ndarray,
+    sta_pos: np.ndarray,
+    dist: float,
+    beam_angle: float,
+    pl_db: float,
+    tx_gain_db: float,
+    interference_db: float,
+    sinr_db: float,
+    rate: float,
+    effective_csi: np.ndarray,
+) -> np.ndarray:
+    """Create a feature vector from link statistics and CSI magnitudes/phases."""
+    scalar_features = np.array([
+        float(dist),
+        float(beam_angle),
+        float(pl_db),
+        float(tx_gain_db),
+        float(interference_db),
+        float(sinr_db),
+        float(rate),
+    ], dtype=np.float64)
+    csi_mag = np.abs(np.asarray(effective_csi)).reshape(-1)
+    csi_phase = np.angle(np.asarray(effective_csi)).reshape(-1)
+    return np.concatenate((scalar_features, csi_mag, csi_phase)).astype(np.float32)
+
+
+def csi_dataset_to_dataframe(features: np.ndarray, labels: np.ndarray, num_subcarriers: int, num_antennas: int, mode: str = 'mag_phase'):
+    """Convert collected CSI features to a pandas DataFrame using per-subcarrier beamformed CSI."""
+    import pandas as pd
+
+    scalar_cols = ['dist_m', 'beam_angle_deg', 'pl_db', 'tx_gain_db', 'interference_db', 'sinr_db', 'rate']
+    csi_cols = []
+    if mode == 'mag_phase':
+        for s in range(num_subcarriers):
+            csi_cols.append(f'mag_s{s}')
+            csi_cols.append(f'phase_s{s}')
+    elif mode == 'mag':
+        for s in range(num_subcarriers):
+            csi_cols.append(f'mag_s{s}')
+    else:
+        for s in range(num_subcarriers):
+            csi_cols.append(f'phase_s{s}')
+
+    column_names = scalar_cols + csi_cols
+    df = pd.DataFrame(features, columns=column_names)
+    df['label'] = labels
+    return df
+
 @dataclass
 class Config:
     num_bss: int
     num_antennas: int
     seed: int
-    min_num_stas: int = 3
-    max_num_stas: int = 4
+    min_num_stas: int = 1
+    max_num_stas: int = 1
     max_steps_episode: int = 2000
     channel_freq: float = 2.4
     bw_mhz: float = 20.0
@@ -21,6 +126,7 @@ class Config:
     noise_mw: float = 4e-10
     area_size: float = 75.0
     topology_seed: int = 0
+    channel_update_interval_in_ticks: int = 1
 
 class Sim:
     def __init__(self, config: Config):
@@ -34,6 +140,7 @@ class Sim:
         self.max_steps_episode = config.max_steps_episode
         self.area_size = config.area_size
         self.topology_seed = config.topology_seed or config.seed
+        self.channel_update_interval_in_ticks = config.channel_update_interval_in_ticks
 
         self.num_subcarriers = 32
         self.element_spacing = 0.5
@@ -109,6 +216,7 @@ class Sim:
         assert action.shape[1] == min(max(1, self.num_antennas - 1), max(1, self.num_bs - 1))
         active_stas = self._get_active_stas()
         rates = []
+        channel_update = (self.num_steps % self.channel_update_interval_in_ticks == 0)
 
         for i, ap in enumerate(self.aps):
             target_sta = active_stas[i]
@@ -154,33 +262,34 @@ class Sim:
             rate = max(0.1, np.log2(1 + 10 ** (sinr_db / 10)) * 10.0)
             rates.append(rate)
 
-            csi = generate_csi_vector(
-                np.array([ap.x, ap.y]),
-                np.array([target_sta.x, target_sta.y]),
-                num_antennas=self.num_antennas,
-                num_subcarriers=self.num_subcarriers,
-                freq_ghz=self.channel_freq,
-                element_spacing=self.element_spacing,
-                k_factor=self.k_factor,
-                seed=int(self.config.seed + self.num_steps + i + target_sta.id if hasattr(target_sta, 'id') else self.config.seed + self.num_steps + i),
-            )
-            beam_weights = steering_vector(self.num_antennas, self.element_spacing, beam_angle)
-            effective_csi = apply_beamforming(csi, beam_weights)
-            interference_db = 10 * np.log10(interference_mw + self.noise_mw)
-            feature = build_feature_vector(
-                np.array([ap.x, ap.y]),
-                np.array([target_sta.x, target_sta.y]),
-                dist,
-                beam_angle,
-                pl_db,
-                tx_gain_db,
-                interference_db,
-                sinr_db,
-                rate,
-                effective_csi,
-            )
-            self.csi_features.append(feature)
-            self.csi_labels.append(rate)
+            if channel_update:
+                csi = generate_csi_vector(
+                    np.array([ap.x, ap.y]),
+                    np.array([target_sta.x, target_sta.y]),
+                    num_antennas=self.num_antennas,
+                    num_subcarriers=self.num_subcarriers,
+                    freq_ghz=self.channel_freq,
+                    element_spacing=self.element_spacing,
+                    k_factor=self.k_factor,
+                    seed=int(self.config.seed + self.num_steps + i + target_sta.id if hasattr(target_sta, 'id') else self.config.seed + self.num_steps + i),
+                )
+                beam_weights = steering_vector(self.num_antennas, self.element_spacing, beam_angle)
+                effective_csi = apply_beamforming(csi, beam_weights)
+                interference_db = 10 * np.log10(interference_mw + self.noise_mw)
+                feature = build_feature_vector(
+                    np.array([ap.x, ap.y]),
+                    np.array([target_sta.x, target_sta.y]),
+                    dist,
+                    beam_angle,
+                    pl_db,
+                    tx_gain_db,
+                    interference_db,
+                    sinr_db,
+                    rate,
+                    effective_csi,
+                )
+                self.csi_features.append(feature)
+                self.csi_labels.append(rate)
 
 
         reward = float(np.sum(np.log2(np.maximum(rates, 1e-6))))
@@ -196,7 +305,7 @@ class Sim:
         features = (
             np.vstack(self.csi_features)
             if self.csi_features
-            else np.zeros((0, 7 + 2 * self.num_subcarriers * self.num_antennas), dtype=np.float32)
+            else np.zeros((0, 7 + 2 * self.num_subcarriers), dtype=np.float32)
         )
         labels = np.array(self.csi_labels, dtype=np.float32)
         if use_pandas:
