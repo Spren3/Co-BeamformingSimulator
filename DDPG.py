@@ -1,5 +1,8 @@
+import os
 import random
 import torch.nn.functional as F
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt 
 import numpy as np
 import torch.optim as optim
@@ -190,6 +193,41 @@ class Critic(nn.Module):
 
 
 
+def save_training_history(episodes, rewards, aggregate_throughputs, filepath="training_history.csv"):
+    with open(filepath, "w", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["episode", "reward", "aggregate_obss_throughput_mbps"])
+        for episode, reward, aggregate_throughput in zip(episodes, rewards, aggregate_throughputs):
+            writer.writerow([episode, reward, aggregate_throughput])
+
+
+def load_training_history(filepath="training_history.csv"):
+    if not os.path.exists(filepath):
+        return [], [], []
+
+    episodes, rewards, aggregate_throughputs = [], [], []
+    with open(filepath, newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            episodes.append(int(row["episode"]))
+            rewards.append(float(row["reward"]))
+            aggregate_throughputs.append(float(row["aggregate_obss_throughput_mbps"]))
+
+    return episodes, rewards, aggregate_throughputs
+
+
+def plot_aggregate_throughput(episodes, aggregate_throughputs, output_path="aggregate_obss_throughput_curve.pdf"):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(episodes, aggregate_throughputs, color="tab:blue", marker="o", linewidth=1.6)
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Aggregate OBSS throughput [Mb/s]")
+    ax.set_title("Aggregate OBSS throughput vs. episode")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
 class DDPG(object):
     def __init__(self, state_dim, action_dim):
         """
@@ -329,11 +367,6 @@ class DDPG(object):
 
 
 
-
-
-
-
-
 """
 Iterate over different base station with different combinations of antennas
 """
@@ -345,7 +378,7 @@ code_start_time = time.time()
 if __name__ == '__main__':
     seed = 42
     num_bss = 7
-    num_antennas = 2
+    num_antennas = 4
     config = Config(num_bss, num_antennas, seed)
 
     np.random.seed(config.seed)
@@ -368,68 +401,79 @@ if __name__ == '__main__':
     flag2 = True
     allRewards = []
 
-    max_episode = 20000
+    max_episode = 400
     allRewards = []
+    aggregate_throughputs = []
 
-    for i in range(max_episode):
-        print(f"Episode {i} | Main_DDPG_Interf_Opt_{num_bss}APs_fastRunning")
-        print(f"BS: {config.num_bss} | Antennas: {config.num_antennas} | (STA)s: {config.max_num_stas}")
-        obs = env.reset()
-        state = obs.flatten()
-        # print(state)
-
-
-        ou_noise.reset()  # reset noise at each episode start
-
-        episode_reward = 0
-        t = 0
-
-        while True:
-
-            # Agent action: shape (action_dim,) = (num_bs,)
-            action = agent.select_action(state, ou_noise)  # already flat, length=3
-
-            # Reshape for env: each AP gets 1 null angle -> (num_bs, 1)
-            action_env = action.reshape(env.num_bs, min(config.num_antennas - 1, env.num_bs - 1))
-
-            next_obs, reward, done, _ = env.step(action_env)
+    history_episodes, history_rewards, history_throughputs = load_training_history()
+    if len(history_episodes) >= max_episode:
+        print(f"Using existing training history from training_history.csv with {len(history_episodes)} episodes.")
+        allRewards = history_rewards[:max_episode]
+        aggregate_throughputs = history_throughputs[:max_episode]
+    else:
+        for i in range(max_episode):
+            print(f"Episode {i} | Main_DDPG_Interf_Opt_{num_bss}APs_fastRunning")
+            print(f"BS: {config.num_bss} | Antennas: {config.num_antennas} | (STA)s: {config.max_num_stas}")
+            obs = env.reset()
+            state = obs.flatten()
+            # print(state)
 
 
-            next_state = next_obs.flatten()
+            ou_noise.reset()  # reset noise at each episode start
 
-            # Store flat action (length=3) in replay buffer
-            agent.replay_buffer.push((state, next_state, action, reward, float(done)))
+            episode_reward = 0.0
+            episode_aggregate_throughput = 0.0
+            t = 0
 
-            episode_reward += reward
-            state = next_state
-            t += 1
+            while True:
 
-            if done:
-                break
-        
-        if i % 100 == 0:
-            print("Action sample:", action)
+                # Agent action: shape (action_dim,) = (num_bs,)
+                action = agent.select_action(state, ou_noise)  # already flat, length=3
 
-        allRewards.append(episode_reward)
+                # Reshape for env: each AP gets 1 null angle -> (num_bs, 1)
+                action_env = action.reshape(env.num_bs, min(config.num_antennas - 1, env.num_bs - 1))
 
-        # Fix 4: Only update after buffer is sufficiently filled
-        if len(agent.replay_buffer.storage) >= MIN_BUFFER_SIZE:
-            agent.update()
+                next_obs, reward, done, info = env.step(action_env)
 
-        if i % 100 == 0:
-            avg = np.mean(allRewards[-100:])
-            print(f"  Episode {i} | Steps: {t} | Reward: {episode_reward:.4f} | Avg(100): {avg:.4f}")
-            agent.save()
+
+                next_state = next_obs.flatten()
+
+                # Store flat action (length=3) in replay buffer
+                agent.replay_buffer.push((state, next_state, action, reward, float(done)))
+
+                episode_reward += reward
+                episode_aggregate_throughput += float(info.get("aggregate_throughput_mbps", 0.0))
+                state = next_state
+                t += 1
+                
+                if done:
+                    break
+            
+            if i % 100 == 0:
+                print("Action sample:", action)
+
+            allRewards.append(episode_reward)
+            aggregate_throughputs.append(episode_aggregate_throughput / max(1, t))
+
+            # Fix 4: Only update after buffer is sufficiently filled
+            if len(agent.replay_buffer.storage) >= MIN_BUFFER_SIZE:
+                agent.update()
+
+            if i % 100 == 0:
+                avg = np.mean(allRewards[-100:])
+                print(f"  Episode {i} | Steps: {t} | Reward: {episode_reward:.4f} | Avg(100): {avg:.4f}")
+                agent.save()
+
+        save_training_history(list(range(max_episode)), allRewards, aggregate_throughputs)
 
     plt.plot(allRewards)
     plt.xlabel("Episode")
     plt.ylabel("Sum log2(rate)")
     plt.title("DDPG Learning Curve")
-    plt.savefig("reward_curve.png")
-    plt.show()
+    plt.savefig("reward_curve.pdf")
+    plt.close()
 
-
-
+    plot_aggregate_throughput(list(range(len(aggregate_throughputs))), aggregate_throughputs)
     code_end_time = time.time()
     elapsed_time = code_end_time - code_start_time
 
@@ -440,9 +484,4 @@ if __name__ == '__main__':
     # Print the formatted elapsed time
     print(f"Elapsed Time for Code Execution: {int(hours)} hours, {int(minutes)} minutes, {seconds:.2f} seconds")
 
-
-
-
     env.close()
-
-

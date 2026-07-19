@@ -119,7 +119,7 @@ class Config:
     seed: int
     min_num_stas: int = 1
     max_num_stas: int = 1
-    max_steps_episode: int = 2000
+    max_steps_episode: int = 200
     channel_freq: float = 2.4
     bw_mhz: float = 20.0
     tx_power_dbm: float = 20.0
@@ -293,10 +293,11 @@ class Sim:
 
 
         reward = float(np.sum(np.log2(np.maximum(rates, 1e-6))))
+        aggregate_throughput_mbps = float(np.sum(rates))
         self.num_steps += 1
         obs = self.get_observation()
         done = self.num_steps >= self.max_steps_episode
-        return obs, reward, done, {}
+        return obs, reward, done, {"aggregate_throughput_mbps": aggregate_throughput_mbps}
 
     def close(self):
         return None
