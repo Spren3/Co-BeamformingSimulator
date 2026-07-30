@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from math import log10, pow 
+from math import log10, pow, erf
 from beam_pattern import calculate_beam_pattern, calculate_power_at_angle, rotate_beam_pattern, plot_beam_pattern_cartesian
 mpl.rcParams.update({
     'font.family': 'serif',                   # typ czcionki
@@ -123,6 +123,32 @@ noise=0.0000000004
 Bp=10 # breaking point w metrach
 room_size = 100  # w metrach
 
+DATA_RATES = {
+    20: np.array([8.6, 17.2, 25.8, 34.4, 51.6, 68.8, 77.4, 86.0,
+                  103.2, 114.7, 129.0, 143.2, 154.9, 172.1], dtype=np.float64),
+    40: np.array([17.2, 34.4, 51.6, 68.8, 103.2, 137.6, 154.9, 172.1,
+                  206.5, 229.4, 258.1, 286.8, 309.7, 344.1], dtype=np.float64),
+    80: np.array([36.0, 72.1, 108.1, 144.1, 216.2, 288.2, 324.3, 360.3,
+                  432.4, 480.4, 540.4, 600.5, 648.5, 720.6], dtype=np.float64),
+    160: np.array([72.1, 144.1, 216.2, 288.2, 432.4, 576.5, 648.5, 720.6,
+                   864.7, 960.8, 1080.9, 1201.0, 1297.1, 1441.2], dtype=np.float64),
+}
+
+MEAN_SNRS = {
+    20: np.array([15.160, 13.720, 12.749, 12.315, 11.816, 13.850, 14.639, 15.660, 19.442, 20.892, 28.141, 30.084, 33.888, 35.913], dtype=np.float64),
+    40: np.array([13.937, 12.314, 11.807, 11.671, 12.610, 15.901, 17.166, 18.447, 22.386, 23.885, 31.153, 33.082, 36.892, 38.926], dtype=np.float64),
+    80: np.array([12.287, 11.475, 11.209, 12.432, 14.802, 18.870, 20.203, 21.485, 25.403, 26.908, 34.376, 36.301, 40.107, 42.129], dtype=np.float64),
+    160: np.array([11.492, 11.342, 12.263, 14.681, 17.739, 21.901, 23.215, 24.481, 28.421, 29.906, 37.386, 39.310, 43.131, 45.163], dtype=np.float64),
+}
+STD_SNR = 2.5
+
+
+def _normal_cdf(values: np.ndarray, mean: np.ndarray, std: float) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    mean = np.asarray(mean, dtype=np.float64)
+    return 0.5 * (1.0 + np.vectorize(erf)((values - mean) / (std * np.sqrt(2.0))))
+
+
 class calculations:
     def __init__(self,aps):
         self.aps=aps
@@ -142,11 +168,23 @@ class calculations:
         (37, 11, "1024-QAM", "5/6", 143.4),
     ]
 
-    def sinr_to_mcs(sinr):
-        for sinr_threshold, mcs_index, mod, coding, rate in mcs_table_ac_ax:
-            if sinr < sinr_threshold:
-                return mcs_index - 1, rate
-        return mcs_table_ac_ax[-1][1], mcs_table_ac_ax[-1][4]
+    @staticmethod
+    def sinr_to_mcs(sinr, channel_width=20):
+        rates = DATA_RATES[channel_width]
+        means = MEAN_SNRS[channel_width]
+        sinr_array = np.asarray(sinr, dtype=np.float64)
+        sinr_2d = sinr_array.reshape(1, -1)
+        expected_data_rate = rates[:, None] * _normal_cdf(sinr_2d, means[:, None], STD_SNR)
+        mcs_idx = np.argmax(expected_data_rate, axis=0)
+        selected_rate = rates[mcs_idx]
+
+        mcs_idx = np.asarray(mcs_idx).reshape(sinr_array.shape)
+        selected_rate = np.asarray(selected_rate).reshape(sinr_array.shape)
+
+        if sinr_array.ndim == 0:
+            return int(mcs_idx.item()), float(selected_rate.item())
+
+        return mcs_idx, selected_rate
 
 
     def pickOtherAP(self,STA,AP):
@@ -308,11 +346,9 @@ mcs_table_ac_ax = [
     (37, 11, "1024-QAM", "5/6", 143.4),
 ]
 
-def sinr_to_mcs(sinr):
-    for sinr_threshold, mcs_index, mod, coding, rate in mcs_table_ac_ax:
-        if sinr < sinr_threshold:
-            return mcs_index - 1, rate
-    return mcs_table_ac_ax[-1][1], mcs_table_ac_ax[-1][4]
+def sinr_to_mcs(sinr, channel_width=20):
+    return calculations.sinr_to_mcs(sinr, channel_width=channel_width)
+
 
 def plot_sinr_to_mcs_mapping():
     sinr_values = list(range(0, 41))
@@ -1169,7 +1205,8 @@ def sixth_scenario_2STA_2AP():
     # plt.savefig("Figure_2AP_2STA_omni_test_positions.pdf")
     colors = plt.cm.tab20.colors
     labels = ['omnidirectional', 'beamforming']
-    plt.bar(labels, sinr, color=[colors[(2-1-i) % len(colors)] for i in range(2)])
+    sinr_values = [sinr_1, sinr_2]
+    plt.bar(labels, sinr_values, color=[colors[(2-1-i) % len(colors)] for i in range(2)])
     plt.xlabel('Antenna type')
     plt.ylabel('SINR [dB]')
     plt.show()

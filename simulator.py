@@ -259,7 +259,7 @@ class Sim:
             sinr_db = self.tx_power_dbm + tx_gain_db - (
                 pl_db + 10 * np.log10(interference_mw + self.noise_mw)
             )
-            _, rate = calculations.sinr_to_mcs(sinr_db)
+            _, rate = calculations.sinr_to_mcs(sinr_db, channel_width=int(self.bw_mhz))
             rate = float(rate)
             rates.append(rate)
 
