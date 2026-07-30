@@ -259,7 +259,8 @@ class Sim:
             sinr_db = self.tx_power_dbm + tx_gain_db - (
                 pl_db + 10 * np.log10(interference_mw + self.noise_mw)
             )
-            rate = max(0.1, np.log2(1 + 10 ** (sinr_db / 10)) * 10.0)
+            _, rate = calculations.sinr_to_mcs(sinr_db)
+            rate = float(rate)
             rates.append(rate)
 
             if channel_update:
@@ -273,8 +274,9 @@ class Sim:
                     k_factor=self.k_factor,
                     seed=int(self.config.seed + self.num_steps + i + target_sta.id if hasattr(target_sta, 'id') else self.config.seed + self.num_steps + i),
                 )
-                beam_weights = steering_vector(self.num_antennas, self.element_spacing, beam_angle)
-                effective_csi = apply_beamforming(csi, beam_weights)
+                beam_power_db = calculate_power_at_angle(theta_rotated, w_fft_dB_rotated, beam_angle)
+                beam_power_linear = 10 ** (beam_power_db / 20.0)
+                effective_csi = np.mean(csi, axis=1) * beam_power_linear
                 interference_db = 10 * np.log10(interference_mw + self.noise_mw)
                 feature = build_feature_vector(
                     np.array([ap.x, ap.y]),
@@ -291,13 +293,15 @@ class Sim:
                 self.csi_features.append(feature)
                 self.csi_labels.append(rate)
 
+        # print(f"DEBUG SLOT: total_rate={sum(rates):.2f}, per_rate={[round(r,2) for r in rates]}")
+
 
         reward = float(np.sum(np.log2(np.maximum(rates, 1e-6))))
         aggregate_throughput_mbps = float(np.sum(rates))
         self.num_steps += 1
         obs = self.get_observation()
         done = self.num_steps >= self.max_steps_episode
-        return obs, reward, done, {"aggregate_throughput_mbps": aggregate_throughput_mbps}
+        return obs, reward, done, {"aggregate_throughput_mbps": aggregate_throughput_mbps, "rates": rates}
 
     def close(self):
         return None
@@ -746,10 +750,7 @@ def round_sim(
     ap_selection: str,
     seed: int,
     topology_seed: int,
-    record_csi: bool = False,
-    num_subcarriers: int = 32,
-    use_pandas: bool = False,
-    pandas_mode: str = 'mag_phase',
+    record_csi: bool = False
 ):
     np.random.seed(seed)
     f= 2.4 #GHz
