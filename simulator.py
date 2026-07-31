@@ -1,11 +1,25 @@
-import numpy as np
+import random
 import matplotlib.pyplot as plt
-from typing import Tuple, List, Dict
+from typing import tuple, list, dict
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
-from beam_pattern import calculate_beam_pattern, calculate_power_at_angle, rotate_beam_pattern, plot_beam_pattern_cartesian
-from basic_scenarios import calculations, angle_between, angle_between_points_from_perspective, compute_mean_ci, plot_means_with_ci, plot_boxplots, plot_histograms, plot_cdf
-import random
+import numpy as np
+from basic_scenarios import (
+    angle_between,
+    angle_between_points_from_perspective,
+    calculations,
+    compute_mean_ci,
+    plot_boxplots,
+    plot_cdf,
+    plot_histograms,
+    plot_means_with_ci,
+)
+from beam_pattern import (
+    calculate_beam_pattern,
+    calculate_power_at_angle,
+    plot_beam_pattern_cartesian,
+    rotate_beam_pattern,
+)
 
 
 def path_loss_db(distance_m: float, f: float) -> float:
@@ -345,9 +359,9 @@ class TopologyGenerator:
         
     def generate_multiroom_topology(self,
                                   topo_seed: int, 
-                                  grid_size: Tuple[int, int], 
+                                  grid_size: tuple[int, int], 
                                   room_size: float,
-                                  stations_per_room: int = 4) -> Dict:
+                                  stations_per_room: int = 4) -> dict:
         """
         Generuje topologię wielopokojową
         
@@ -419,8 +433,8 @@ class TopologyGenerator:
                                    topo_seed: int,
                                    area_size: float = 75.0,
                                    num_aps: int = 4,
-                                   stations_per_ap: Tuple[int, int] = (3, 4),
-                                   station_std: float = 10.0) -> Dict:
+                                   stations_per_ap: tuple[int, int] = (3, 4),
+                                   station_std: float = 10.0) -> dict:
         """
         Generuje topologię otwartej przestrzeni
         
@@ -481,7 +495,7 @@ class TopologyGenerator:
             }
         }
     
-    def _reassign_to_nearest_ap(self, nodes: List[NetworkNode]):
+    def _reassign_to_nearest_ap(self, nodes: list[NetworkNode]):
         """Przypisuje stacje do najbliższych AP (jak w Fig. 11a)"""
         aps = [n for n in nodes if n.node_type == 'AP']
         stations = [n for n in nodes if n.node_type == 'STA']
@@ -502,7 +516,7 @@ class TopologyGenerator:
         for i, sta in enumerate(stations):
             sta.associated_ap = aps[nearest_ap_indices[i]].id
     
-    def _create_bipartite_graph(self, nodes: List[NetworkNode]) -> Dict:
+    def _create_bipartite_graph(self, nodes: list[NetworkNode]) -> dict:
         """
         Tworzy graf dwudzielny G = (V, E) gdzie V = A ∪ S
         
@@ -562,9 +576,9 @@ class TopologyGenerator:
         return angle % 360
 
     def calculate_interference_omni(self, 
-                                        target_link: Tuple[int, int],
-                                        all_transmissions: List[Tuple[int, int]], 
-                                        nodes: List[NetworkNode]) -> float:
+                                        target_link: tuple[int, int],
+                                        all_transmissions: list[tuple[int, int]], 
+                                        nodes: list[NetworkNode]) -> float:
         """
         Oblicza poziom interferencji ζₑ dla anten omni
         
@@ -605,9 +619,9 @@ class TopologyGenerator:
         return interference
     
     def calculate_interference_with_antennas(self, 
-                                        target_link: Tuple[int, int],
-                                        all_transmissions: List[Tuple[int, int]], 
-                                        nodes: List[NetworkNode]) -> float:
+                                        target_link: tuple[int, int],
+                                        all_transmissions: list[tuple[int, int]], 
+                                        nodes: list[NetworkNode]) -> float:
         """
         Oblicza poziom interferencji ζₑ z uwzględnieniem charakterystyk kierunkowych anten
         
@@ -675,7 +689,7 @@ class TopologyGenerator:
         return interference
 
 
-    def plot_topology(self, topology_data: Dict, figsize: Tuple[int, int] = (10, 8)):
+    def plot_topology(self, topology_data: dict, figsize: tuple[int, int] = (10, 8)):
         """Wizualizuje wygenerowaną topologię"""
         import matplotlib.patches as mpatches
 
