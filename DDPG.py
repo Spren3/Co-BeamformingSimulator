@@ -1,5 +1,6 @@
 import os
 import random
+import pandas as pd
 import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
@@ -10,6 +11,7 @@ import torch.nn as nn
 # from Sim import Sim
 from simulator import Sim, Config
 # from config import Config
+from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2
 
 
 import torch
@@ -389,6 +391,8 @@ if __name__ == '__main__':
     action_dim, state_dim = env.get_spaces()
     
     agent = DDPG(state_dim, action_dim)
+    oracle_actor = NeuralBandit2(action_dim, state_dim)
+    oracle_optimizer = oracle_actor.optimizer
     std_dev = 0.05
     # ou_noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
     ou_noise = OUActionNoise(
@@ -427,18 +431,27 @@ if __name__ == '__main__':
 
             while True:
 
-                # Agent action: shape (action_dim,) = (num_bs,)
-                action = agent.select_action(state, ou_noise)  # already flat, length=3
+                # Agent action: shape (action_dim,) = flattened action vector
+                action = agent.select_action(state, ou_noise)
+                oracle_action = np.asarray(oracle_actor.predict(obs)).flatten()
 
-                # Reshape for env: each AP gets 1 null angle -> (num_bs, 1)
+                # Reshape for env: each AP gets min(num_antennas-1, num_bs-1) null angles
                 action_env = action.reshape(env.num_bs, min(config.num_antennas - 1, env.num_bs - 1))
 
                 next_obs, reward, done, info = env.step(action_env)
 
-
                 next_state = next_obs.flatten()
 
-                # Store flat action (length=3) in replay buffer
+                # Train Oracle actor using critic guidance on the same simulated sample
+                oracle_action_tensor = torch.FloatTensor(oracle_action.reshape(1, -1)).to(device)
+                state_tensor = torch.FloatTensor(state.reshape(1, -1)).to(device)
+                oracle_loss = -agent.critic(state_tensor, oracle_action_tensor).mean()
+                oracle_optimizer.zero_grad()
+                oracle_loss.backward()
+                oracle_optimizer.step()
+                oracle_actor.update(oracle_action, obs, reward)
+
+                # Store flat action (length=action_dim) in replay buffer
                 agent.replay_buffer.push((state, next_state, action, reward, float(done)))
 
                 episode_reward += reward
@@ -463,8 +476,9 @@ if __name__ == '__main__':
                 avg = np.mean(allRewards[-100:])
                 print(f"  Episode {i} | Steps: {t} | Reward: {episode_reward:.4f} | Avg(100): {avg:.4f}")
                 agent.save()
+                torch.save(oracle_actor.model.state_dict(), directory + 'oracle_actor.pth')
 
-        save_training_history(list(range(max_episode)), allRewards, aggregate_throughputs)
+        save_training_history(list(range(max_episode)), allRewards, aggregate_throughputs,f"training_history_seed{seed}.csv")
 
     plt.plot(allRewards)
     plt.xlabel("Episode")

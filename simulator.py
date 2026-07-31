@@ -4,6 +4,8 @@ from typing import tuple, list, dict
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
 import numpy as np
+import gymnasium
+from gymnasium import spaces
 from basic_scenarios import (
     angle_between,
     angle_between_points_from_perspective,
@@ -141,6 +143,9 @@ class Config:
     area_size: float = 75.0
     topology_seed: int = 0
     channel_update_interval_in_ticks: int = 1
+    move_prob: float = 1.0
+    client_radius: float = 8.0
+    tick: float = 0.05
 
 class Sim:
     def __init__(self, config: Config):
@@ -149,12 +154,24 @@ class Sim:
         self.num_antennas = config.num_antennas
         self.channel_freq = config.channel_freq
         self.bw_mhz = config.bw_mhz
-        self.tx_power_dbm = config.tx_power_dbm
-        self.noise_mw = config.noise_mw
+        self.tx_power_dbm = getattr(config, 'tx_power_dbm', 20.0)
+        self.noise_mw = getattr(config, 'noise_mw', 4e-10)
         self.max_steps_episode = config.max_steps_episode
-        self.area_size = config.area_size
-        self.topology_seed = config.topology_seed or config.seed
-        self.channel_update_interval_in_ticks = config.channel_update_interval_in_ticks
+        self.area_size = getattr(config, 'area_size', 75.0)
+        self.topology_seed = getattr(config, 'topology_seed', config.seed)
+        self.channel_update_interval_in_ticks = getattr(config, 'channel_update_interval_in_ticks', 1)
+
+        action_dim = min(max(1, self.num_antennas - 1), max(1, self.num_bs - 1))
+        self.observation_space = spaces.Box(
+            low=np.zeros((self.num_bs, self.num_bs * 2), dtype=np.float32),
+            high=np.ones((self.num_bs, self.num_bs * 2), dtype=np.float32),
+            dtype=np.float32,
+        )
+        self.action_space = spaces.Box(
+            low=np.zeros((self.num_bs, action_dim), dtype=np.float32),
+            high=np.ones((self.num_bs, action_dim), dtype=np.float32),
+            dtype=np.float32,
+        )
 
         self.num_subcarriers = 32
         self.element_spacing = 0.5
