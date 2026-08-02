@@ -14,7 +14,10 @@ import torch.nn as nn
 from simulator import Sim, Config
 
 # from config import Config
-from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2, OracleHeuristicBandit
+from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import (
+    NeuralBandit2,
+    OracleHeuristicBandit,
+)
 
 
 import torch
@@ -204,8 +207,13 @@ class Critic(nn.Module):
         return temp
 
 
-
-def save_training_history(episodes, rewards, aggregate_throughputs, heuristic_throughputs=None, filepath="training_history.csv"):
+def save_training_history(
+    episodes,
+    rewards,
+    aggregate_throughputs,
+    heuristic_throughputs=None,
+    filepath="training_history.csv",
+):
     with open(filepath, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
         if heuristic_throughputs is not None:
@@ -524,7 +532,12 @@ if __name__ == "__main__":
     allRewards = []
     aggregate_throughputs = []
 
-    history_episodes, history_rewards, history_throughputs, history_heuristic_throughputs = load_training_history()
+    (
+        history_episodes,
+        history_rewards,
+        history_throughputs,
+        history_heuristic_throughputs,
+    ) = load_training_history()
     if len(history_episodes) >= max_episode:
         print(f"Using existing training history from training_history.csv with {len(history_episodes)} episodes.")
         allRewards = history_rewards[:max_episode]
