@@ -14,7 +14,7 @@ import torch.nn as nn
 from simulator import Sim, Config
 
 # from config import Config
-from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2
+from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2, OracleHeuristicBandit
 
 
 import torch
@@ -205,34 +205,144 @@ class Critic(nn.Module):
 
 
 
-def save_training_history(episodes, rewards, aggregate_throughputs, filepath="training_history.csv"):
+def save_training_history(episodes, rewards, aggregate_throughputs, heuristic_throughputs=None, filepath="training_history.csv"):
     with open(filepath, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["episode", "reward", "aggregate_obss_throughput_mbps"])
-        for episode, reward, aggregate_throughput in zip(
-            episodes, rewards, aggregate_throughputs
-        ):
-            writer.writerow([episode, reward, aggregate_throughput])
+        if heuristic_throughputs is not None:
+            writer.writerow(
+                [
+                    "episode",
+                    "reward",
+                    "aggregate_obss_throughput_mbps",
+                    "heuristic_aggregate_obss_throughput_mbps",
+                ]
+            )
+            for episode, reward, agg_tput, heur_tput in zip(
+                episodes, rewards, aggregate_throughputs, heuristic_throughputs
+            ):
+                writer.writerow([episode, reward, agg_tput, heur_tput])
+        else:
+            writer.writerow(["episode", "reward", "aggregate_obss_throughput_mbps"])
+            for episode, reward, aggregate_throughput in zip(
+                episodes, rewards, aggregate_throughputs
+            ):
+                writer.writerow([episode, reward, aggregate_throughput])
 
 
 def load_training_history(filepath="training_history.csv"):
     if not os.path.exists(filepath):
-        return [], [], []
+        return [], [], [], []
 
-    episodes, rewards, aggregate_throughputs = [], [], []
+    episodes, rewards, aggregate_throughputs, heuristic_throughputs = [], [], [], []
     with open(filepath, newline="") as csv_file:
         reader = csv.DictReader(csv_file)
+        has_heuristic = "heuristic_aggregate_obss_throughput_mbps" in reader.fieldnames
         for row in reader:
             episodes.append(int(row["episode"]))
             rewards.append(float(row["reward"]))
             aggregate_throughputs.append(float(row["aggregate_obss_throughput_mbps"]))
+            if has_heuristic:
+                heuristic_throughputs.append(
+                    float(row["heuristic_aggregate_obss_throughput_mbps"])
+                )
 
-    return episodes, rewards, aggregate_throughputs
+    return episodes, rewards, aggregate_throughputs, heuristic_throughputs
 
 
-def plot_aggregate_throughput(episodes, aggregate_throughputs, output_path="aggregate_obss_throughput_curve.pdf"):
+def build_heuristic_action(oracle_agents, obs):
+    action = []
+    for oracle_agent in oracle_agents:
+        pred = np.asarray(oracle_agent.predict(obs), dtype=np.float32).flatten()
+        pred = np.nan_to_num(pred, nan=0.0)
+        action.extend(pred.tolist())
+    return np.asarray(action, dtype=np.float32)
+
+
+def evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas):
+    env = Sim(config)
+    oracle_agents = [OracleHeuristicBandit(i, num_bss, num_antennas) for i in range(num_bss)]
+    throughputs = []
+
+    for i in range(max_episode):
+        obs = env.reset()
+        episode_aggregate_throughput = 0.0
+        t = 0
+
+        while True:
+            action = build_heuristic_action(oracle_agents, obs)
+            action_env = action.reshape(
+                env.num_bs, min(config.num_antennas - 1, env.num_bs - 1)
+            )
+            next_obs, reward, done, info = env.step(action_env)
+            episode_aggregate_throughput += float(
+                info.get("aggregate_throughput_mbps", 0.0)
+            )
+
+            if t % 50 == 0:
+                rates = info.get("rates", [])
+                print(
+                    f"    DEBUG [Heuristic Ep {i} | Step {t}]: Nadaje {len(rates)} APs. "
+                    f"Sum. Thr: {sum(rates):.2f} Mbps | Individual: {[round(r, 2) for r in rates]}"
+                )
+
+            obs = next_obs
+            t += 1
+            if done:
+                break
+
+        if i % 100 == 0:
+            print("Heuristic action sample:", action)
+
+        throughputs.append(episode_aggregate_throughput / max(1, t))
+
+    env.close()
+    return throughputs
+
+
+def plot_aggregate_throughput(episodes, throughput_series, output_path="aggregate_obss_throughput_curve.pdf"):
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(episodes, aggregate_throughputs, color="tab:blue", marker="o", linewidth=1.6)
+
+    if isinstance(throughput_series, dict):
+        series_items = list(throughput_series.items())
+    else:
+        series_items = [("DDPG", throughput_series)]
+
+    colors = plt.cm.tab10.colors
+    for idx, (label, throughputs) in enumerate(series_items):
+        if throughputs is None or len(throughputs) == 0:
+            continue
+
+        color = colors[idx % len(colors)]
+        ax.plot(
+            episodes,
+            throughputs,
+            color=color,
+            alpha=0.3,
+            linewidth=1.0,
+            label=f"Raw {label}",
+        )
+
+        window = min(20, len(episodes))
+        if window > 0:
+            s = pd.Series(throughputs)
+            rolling_mean = s.rolling(window=window, min_periods=1).mean()
+            rolling_std = s.rolling(window=window, min_periods=1).std().fillna(0)
+
+            ax.plot(
+                episodes,
+                rolling_mean,
+                color=color,
+                linewidth=2.0,
+                label=f"{label} MA ({window})",
+            )
+            ax.fill_between(
+                episodes,
+                rolling_mean - rolling_std,
+                rolling_mean + rolling_std,
+                color=color,
+                alpha=0.1,
+            )
+
     ax.set_xlabel("Episode")
     ax.set_ylabel("Aggregate OBSS throughput [Mb/s]")
     ax.set_title("Aggregate OBSS throughput vs. episode")
@@ -414,11 +524,12 @@ if __name__ == "__main__":
     allRewards = []
     aggregate_throughputs = []
 
-    history_episodes, history_rewards, history_throughputs = load_training_history()
+    history_episodes, history_rewards, history_throughputs, history_heuristic_throughputs = load_training_history()
     if len(history_episodes) >= max_episode:
         print(f"Using existing training history from training_history.csv with {len(history_episodes)} episodes.")
         allRewards = history_rewards[:max_episode]
         aggregate_throughputs = history_throughputs[:max_episode]
+        heuristic_throughputs = history_heuristic_throughputs[:max_episode]
     else:
         for i in range(max_episode):
             print(f"Episode {i} | Main_DDPG_Interf_Opt_{num_bss}APs_fastRunning")
@@ -458,7 +569,18 @@ if __name__ == "__main__":
                 agent.replay_buffer.push((state, next_state, action, reward, float(done)))
 
                 episode_reward += reward
-                episode_aggregate_throughput += float(info.get("aggregate_throughput_mbps", 0.0))
+                episode_aggregate_throughput += float(
+                    info.get("aggregate_throughput_mbps", 0.0)
+                )
+
+                # Co 20 kroków logujemy działanie (ile AP nadaje i z jakim throughputem)
+                if t % 50 == 0:
+                    rates = info.get("rates", [])
+                    print(
+                        f"    DEBUG [Ep {i} | Step {t}]: Nadaje {len(rates)} APs. "
+                        f"Sum. Thr: {sum(rates):.2f} Mbps | Individual: {[round(r, 2) for r in rates]}"
+                    )
+
                 state = next_state
                 t += 1
 
@@ -477,14 +599,20 @@ if __name__ == "__main__":
 
             if i % 100 == 0:
                 avg = np.mean(allRewards[-100:])
-                print(f"  Episode {i} | Steps: {t} | Reward: {episode_reward:.4f} | Avg(100): {avg:.4f}")
+                print(
+                    f"  Episode {i} | Steps: {t} | Reward: {episode_reward:.4f} | Avg(100): {avg:.4f}"
+                )
                 agent.save()
-                torch.save(oracle_actor.model.state_dict(), directory + 'oracle_actor.pth')
+                torch.save(
+                    oracle_actor.model.state_dict(), directory + "oracle_actor.pth"
+                )
 
+        heuristic_throughputs = evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas)
         save_training_history(
             list(range(max_episode)),
             allRewards,
             aggregate_throughputs,
+            heuristic_throughputs,
             f"training_history_seed{seed}.csv",
         )
 
@@ -495,7 +623,16 @@ if __name__ == "__main__":
     plt.savefig("reward_curve.pdf")
     plt.close()
 
-    plot_aggregate_throughput(list(range(len(aggregate_throughputs))), aggregate_throughputs)
+    if "heuristic_throughputs" not in locals():
+        heuristic_throughputs = evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas)
+
+    plot_aggregate_throughput(
+        list(range(len(aggregate_throughputs))),
+        {
+            "DDPG": aggregate_throughputs,
+            "OracleHeuristic": heuristic_throughputs,
+        },
+    )
     code_end_time = time.time()
     elapsed_time = code_end_time - code_start_time
 
@@ -504,6 +641,8 @@ if __name__ == "__main__":
     minutes, seconds = divmod(remainder, 60)
 
     # Print the formatted elapsed time
-    print(f"Elapsed Time for Code Execution: {int(hours)} hours, {int(minutes)} minutes, {seconds:.2f} seconds")
+    print(
+        f"Elapsed Time for Code Execution: {int(hours)} hours, {int(minutes)} minutes, {seconds:.2f} seconds"
+    )
 
     env.close()
