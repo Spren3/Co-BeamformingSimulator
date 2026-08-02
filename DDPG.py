@@ -3,13 +3,16 @@ import random
 import pandas as pd
 import torch.nn.functional as F
 import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
+
 # from Sim import Sim
 from simulator import Sim, Config
+
 # from config import Config
 from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2
 
@@ -17,7 +20,6 @@ from Oracle_Sim_BS_7_Ant_4_STA_1.contextual_mab import NeuralBandit2
 import torch
 import copy
 import csv
- 
 
 
 """
@@ -25,22 +27,22 @@ import csv
 
 -> Basic parameters needed for the Deep Deterministic Policy Gradient Actor Critic Nodel
 """
-capacity=1000000
-batch_size=512
-update_iteration=10
-tau=0.001
-gamma=0.99
-directory = './'
-hidden1=32
-hidden2=32
+capacity = 1000000
+batch_size = 512
+update_iteration = 10
+tau = 0.001
+gamma = 0.99
+directory = "./"
+hidden1 = 32
+hidden2 = 32
 MIN_BUFFER_SIZE = 5000
 
 
 """
 Check if our PC has GPU or not
 """
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-if device == 'cuda':
+device = "cuda" if torch.cuda.is_available() else "cpu"
+if device == "cuda":
     print("This code will run on ------> GPU")
 else:
     print("This code will run on ------> CPU")
@@ -76,14 +78,15 @@ class OUActionNoise:
             self.x_prev = self.x_initial
         else:
             self.x_prev = np.zeros_like(self.mean)
-    
 
-class Replay_buffer():
+
+class Replay_buffer:
     """
     Code based on:
     https://github.com/openai/baselines/blob/master/baselines/deepq/replay_buffer.py
     Expects tuples of (state, next_state, action, reward, done)
     """
+
     def __init__(self, max_size=capacity):
         """Create Replay buffer.
         : Parameters
@@ -102,15 +105,15 @@ class Replay_buffer():
         else:
             self.storage.append(data)
 
-    def sample(self, batch_size,it):
+    def sample(self, batch_size, it):
         """
         Sample a batch of experiences.
-        
+
         Parameters
         ----------
         batch_size: int
             How many transitions to sample.
-        
+
         Returns
         -------
         state: np.array
@@ -139,16 +142,21 @@ class Replay_buffer():
             reward.append(np.asarray(rew))
             done.append(np.asarray(dn))
 
-        return np.array(state), np.array(next_state), np.array(action), np.array(reward).reshape(-1, 1), np.array(done).reshape(-1, 1)
+        return (
+            np.array(state),
+            np.array(next_state),
+            np.array(action),
+            np.array(reward).reshape(-1, 1),
+            np.array(done).reshape(-1, 1),
+        )
 
 
 class Actor(nn.Module):
-
     """
     : The Actor model will take the state observation as input and outputs a continuous action value.
-    : It consists of four fully coonected linear layers/ you can change accorind to your choice, with ReLU activation functions and 
+    : It consists of four fully coonected linear layers/ you can change accorind to your choice, with ReLU activation functions and
     a final Sigmoid output layer selects number of optimized action for the state.
-    : I used Sigmoid just because our actions are needed in the range of 0 ~ 1 (These will be angles which needs to be null 
+    : I used Sigmoid just because our actions are needed in the range of 0 ~ 1 (These will be angles which needs to be null
     to improve the datarate for our simulation.)
     """
 
@@ -160,34 +168,36 @@ class Actor(nn.Module):
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, action_dim),
-            nn.Tanh()  # [-1,1]
+            nn.Tanh(),  # [-1,1]
         )
-        
+
     def forward(self, state):
         return self.net(state)
 
+
 class Critic(nn.Module):
     """
-    : The Critic model takes in both a state observation and an action as input and outputs a Q-value, which estimates 
-    the expected total reward for the current state-action pair. 
-    
-    : It consists of four linear layers with ReLU activation functions, State and action inputs are concatenated before 
-    being fed into the first linear layer. 
-    
+    : The Critic model takes in both a state observation and an action as input and outputs a Q-value, which estimates
+    the expected total reward for the current state-action pair.
+
+    : It consists of four linear layers with ReLU activation functions, State and action inputs are concatenated before
+    being fed into the first linear layer.
+
     : The output layer has a single output, representing the Q-value
     """
+
     def __init__(self, n_states, action_dim, hidden2):
         super(Critic, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_states + action_dim, 256), 
-            nn.ReLU(), 
-            nn.Linear(256, 256), 
-            nn.ReLU(), 
-            nn.Linear(256, 256), 
-            nn.ReLU(), 
-            nn.Linear(256, 1)
+            nn.Linear(n_states + action_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
         )
-        
+
     def forward(self, state, action):
         aa = torch.cat((state, action), 1)
         temp = self.net(aa)
@@ -199,7 +209,9 @@ def save_training_history(episodes, rewards, aggregate_throughputs, filepath="tr
     with open(filepath, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["episode", "reward", "aggregate_obss_throughput_mbps"])
-        for episode, reward, aggregate_throughput in zip(episodes, rewards, aggregate_throughputs):
+        for episode, reward, aggregate_throughput in zip(
+            episodes, rewards, aggregate_throughputs
+        ):
             writer.writerow([episode, reward, aggregate_throughput])
 
 
@@ -224,6 +236,7 @@ def plot_aggregate_throughput(episodes, aggregate_throughputs, output_path="aggr
     ax.set_xlabel("Episode")
     ax.set_ylabel("Aggregate OBSS throughput [Mb/s]")
     ax.set_title("Aggregate OBSS throughput vs. episode")
+    ax.legend(loc="lower right")
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300)
@@ -233,30 +246,27 @@ def plot_aggregate_throughput(episodes, aggregate_throughputs, output_path="aggr
 class DDPG(object):
     def __init__(self, state_dim, action_dim):
         """
-        Initializes the DDPG agent. 
+        Initializes the DDPG agent.
         Takes three arguments:
-            : state_dim  ----> which is the dimensionality of the state space, 
-            : action_dim ----> which is the dimensionality of the action space, and 
-            : max_action ----> which is the maximum value an action can take. 
-        
-        Creates a replay buffer, an actor-critic  networks and their corresponding target networks. 
-        It also initializes the optimizer for both actor and critic networks alog with 
+            : state_dim  ----> which is the dimensionality of the state space,
+            : action_dim ----> which is the dimensionality of the action space, and
+            : max_action ----> which is the maximum value an action can take.
+
+        Creates a replay buffer, an actor-critic  networks and their corresponding target networks.
+        It also initializes the optimizer for both actor and critic networks alog with
         counters to track the number of training iterations.
         """
         self.replay_buffer = Replay_buffer()
-        
 
         self.actor = Actor(state_dim, action_dim, hidden1).to(device)
-        self.actor_target = Actor(state_dim, action_dim,  hidden1).to(device)
+        self.actor_target = Actor(state_dim, action_dim, hidden1).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer  = optim.Adam(self.actor.parameters(), lr=1e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4)
 
-
-        self.critic = Critic(state_dim, action_dim,  hidden2).to(device)
-        self.critic_target = Critic(state_dim, action_dim,  hidden2).to(device)
+        self.critic = Critic(state_dim, action_dim, hidden2).to(device)
+        self.critic_target = Critic(state_dim, action_dim, hidden2).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=1e-3)
-
 
         self.num_critic_update_iteration = 0
         self.num_actor_update_iteration = 0
@@ -264,37 +274,36 @@ class DDPG(object):
 
     def select_action(self, state, ou_noise):
         """
-        : Takes the current state as input and returns an action to take in that state. 
+        : Takes the current state as input and returns an action to take in that state.
         : It uses the actor network to map the state to an action.
         """
-        
+
         noise = ou_noise()
         zzz = state.reshape(1, -1)
         state = torch.FloatTensor(zzz).to(device)
-        aaa = self.actor(state)             # [-1, 1]
+        aaa = self.actor(state)  # [-1, 1]
         noise = torch.FloatTensor(noise).to(device)
-        ddd = aaa + noise                   # still ~[-1,1]
-        scaled = (ddd + 1.0) / 2.0          # → [0,1]
+        ddd = aaa + noise  # still ~[-1,1]
+        scaled = (ddd + 1.0) / 2.0  # → [0,1]
         legal_action = torch.clamp(scaled, 0.0, 1.0)
-        
-        return legal_action.cpu().data.numpy().flatten()
 
+        return legal_action.cpu().data.numpy().flatten()
 
     def update(self):
         """
-        updates the actor and critic networks using a batch of samples from the replay buffer. 
-        For each sample in the batch, it computes the target Q value using the target critic network and the target actor network. 
-        It then computes the current Q value 
-        using the critic network and the action taken by the actor network. 
-        
-        It computes the critic loss as the mean squared error between the target Q value and the current Q value, and 
-        updates the critic network using gradient descent. 
-        
-        It then computes the actor loss as the negative mean Q value using the critic network and the actor network, and 
-        updates the actor network using gradient ascent. 
-        
-        Finally, it updates the target networks using 
-        soft updates, where a small fraction of the actor and critic network weights are transferred to their target counterparts. 
+        updates the actor and critic networks using a batch of samples from the replay buffer.
+        For each sample in the batch, it computes the target Q value using the target critic network and the target actor network.
+        It then computes the current Q value
+        using the critic network and the action taken by the actor network.
+
+        It computes the critic loss as the mean squared error between the target Q value and the current Q value, and
+        updates the critic network using gradient descent.
+
+        It then computes the actor loss as the negative mean Q value using the critic network and the actor network, and
+        updates the actor network using gradient ascent.
+
+        Finally, it updates the target networks using
+        soft updates, where a small fraction of the actor and critic network weights are transferred to their target counterparts.
         This process is repeated for a fixed number of iterations.
         """
 
@@ -304,7 +313,7 @@ class DDPG(object):
             state = torch.FloatTensor(state).to(device)
             action = torch.FloatTensor(action).to(device)
             next_state = torch.FloatTensor(next_state).to(device)
-            done = torch.FloatTensor(1-done).to(device)
+            done = torch.FloatTensor(1 - done).to(device)
             reward = torch.FloatTensor(reward).to(device)
 
             # Compute the target Q value
@@ -322,7 +331,7 @@ class DDPG(object):
 
             # Compute critic loss
             critic_loss = F.mse_loss(current_Q, target_Q)
-            
+
             # Optimize the critic
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -330,14 +339,12 @@ class DDPG(object):
 
             # Compute actor loss as the negative mean Q value using the critic network and the actor network
             actor_loss = -self.critic(state, self.actor(state)).mean()
-            
 
             # Optimize the actor
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
 
-            
             """
             Update the frozen target models using 
             soft updates, where 
@@ -348,25 +355,24 @@ class DDPG(object):
 
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-            
+
            
             self.num_actor_update_iteration += 1
             self.num_critic_update_iteration += 1
+
     def save(self):
         """
         Saves the state dictionaries of the actor and critic networks to files
         """
-        torch.save(self.actor.state_dict(), directory + 'actor.pth')
-        torch.save(self.critic.state_dict(), directory + 'critic.pth')
-        
+        torch.save(self.actor.state_dict(), directory + "actor.pth")
+        torch.save(self.critic.state_dict(), directory + "critic.pth")
 
     def load(self):
         """
         Loads the state dictionaries of the actor and critic networks to files
         """
-        self.actor.load_state_dict(torch.load(directory + 'actor.pth'))
-        self.critic.load_state_dict(torch.load(directory + 'critic.pth'))
-
+        self.actor.load_state_dict(torch.load(directory + "actor.pth"))
+        self.critic.load_state_dict(torch.load(directory + "critic.pth"))
 
 
 """
@@ -374,10 +380,11 @@ Iterate over different base station with different combinations of antennas
 """
 
 import time
+
 code_start_time = time.time()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     seed = 42
     num_bss = 7
     num_antennas = 4
@@ -387,17 +394,15 @@ if __name__ == '__main__':
     random.seed(config.seed)
     env = Sim(config)
 
-
     action_dim, state_dim = env.get_spaces()
-    
+
     agent = DDPG(state_dim, action_dim)
     oracle_actor = NeuralBandit2(action_dim, state_dim)
     oracle_optimizer = oracle_actor.optimizer
     std_dev = 0.05
     # ou_noise = OUActionNoise(mean=np.zeros(1), std_deviation=float(std_dev) * np.ones(1))
     ou_noise = OUActionNoise(
-        mean=np.zeros(action_dim),
-        std_deviation=float(std_dev) * np.ones(action_dim)
+        mean=np.zeros(action_dim), std_deviation=float(std_dev) * np.ones(action_dim)
     )
 
     rewards = []
@@ -422,7 +427,6 @@ if __name__ == '__main__':
             state = obs.flatten()
             # print(state)
 
-
             ou_noise.reset()  # reset noise at each episode start
 
             episode_reward = 0.0
@@ -430,7 +434,6 @@ if __name__ == '__main__':
             t = 0
 
             while True:
-
                 # Agent action: shape (action_dim,) = flattened action vector
                 action = agent.select_action(state, ou_noise)
                 oracle_action = np.asarray(oracle_actor.predict(obs)).flatten()
@@ -458,10 +461,10 @@ if __name__ == '__main__':
                 episode_aggregate_throughput += float(info.get("aggregate_throughput_mbps", 0.0))
                 state = next_state
                 t += 1
-                
+
                 if done:
                     break
-            
+
             if i % 100 == 0:
                 print("Action sample:", action)
 
@@ -478,7 +481,12 @@ if __name__ == '__main__':
                 agent.save()
                 torch.save(oracle_actor.model.state_dict(), directory + 'oracle_actor.pth')
 
-        save_training_history(list(range(max_episode)), allRewards, aggregate_throughputs,f"training_history_seed{seed}.csv")
+        save_training_history(
+            list(range(max_episode)),
+            allRewards,
+            aggregate_throughputs,
+            f"training_history_seed{seed}.csv",
+        )
 
     plt.plot(allRewards)
     plt.xlabel("Episode")
