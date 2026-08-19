@@ -1,3 +1,4 @@
+import argparse
 import os
 import random
 import pandas as pd
@@ -6,6 +7,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+plt.style.use("seaborn-v0_8-darkgrid")
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
@@ -207,13 +210,22 @@ class Critic(nn.Module):
         return temp
 
 
+def metric_column_name(metric: str) -> str:
+    if metric == "mb_per_slot":
+        return "aggregate_obss_throughput_mb_per_slot"
+    return "aggregate_obss_throughput_mbps"
+
+
 def save_training_history(
     episodes,
     rewards,
     aggregate_throughputs,
     heuristic_throughputs=None,
     filepath="training_history.csv",
+    metric="mb_per_slot",
 ):
+    throughput_col = metric_column_name(metric)
+    heuristic_col = "heuristic_" + throughput_col
     with open(filepath, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
         if heuristic_throughputs is not None:
@@ -221,8 +233,8 @@ def save_training_history(
                 [
                     "episode",
                     "reward",
-                    "aggregate_obss_throughput_mbps",
-                    "heuristic_aggregate_obss_throughput_mbps",
+                    throughput_col,
+                    heuristic_col,
                 ]
             )
             for episode, reward, agg_tput, heur_tput in zip(
@@ -230,45 +242,60 @@ def save_training_history(
             ):
                 writer.writerow([episode, reward, agg_tput, heur_tput])
         else:
-            writer.writerow(["episode", "reward", "aggregate_obss_throughput_mbps"])
+            writer.writerow(["episode", "reward", throughput_col])
             for episode, reward, aggregate_throughput in zip(
                 episodes, rewards, aggregate_throughputs
             ):
                 writer.writerow([episode, reward, aggregate_throughput])
 
 
-def load_training_history(filepath="training_history.csv"):
+def load_training_history(filepath="training_history.csv", metric="mb_per_slot"):
     if not os.path.exists(filepath):
         return [], [], [], []
 
+    throughput_col = metric_column_name(metric)
+    heuristic_col = "heuristic_" + throughput_col
     episodes, rewards, aggregate_throughputs, heuristic_throughputs = [], [], [], []
     with open(filepath, newline="") as csv_file:
         reader = csv.DictReader(csv_file)
-        has_heuristic = "heuristic_aggregate_obss_throughput_mbps" in reader.fieldnames
+        has_heuristic = heuristic_col in reader.fieldnames
         for row in reader:
             episodes.append(int(row["episode"]))
             rewards.append(float(row["reward"]))
-            aggregate_throughputs.append(float(row["aggregate_obss_throughput_mbps"]))
+            aggregate_throughputs.append(float(row[throughput_col]))
             if has_heuristic:
-                heuristic_throughputs.append(
-                    float(row["heuristic_aggregate_obss_throughput_mbps"])
-                )
+                heuristic_throughputs.append(float(row[heuristic_col]))
 
     return episodes, rewards, aggregate_throughputs, heuristic_throughputs
 
 
-def build_heuristic_action(oracle_agents, obs):
+def build_heuristic_action(oracle_agents, obs, num_bss, num_antennas):
     action = []
     for oracle_agent in oracle_agents:
         pred = np.asarray(oracle_agent.predict(obs), dtype=np.float32).flatten()
         pred = np.nan_to_num(pred, nan=0.0)
         action.extend(pred.tolist())
-    return np.asarray(action, dtype=np.float32)
+
+    action = np.asarray(action, dtype=np.float32)
+    action_dim = min(max(1, num_antennas - 1), max(1, num_bss - 1))
+    if action.size == 0:
+        return np.zeros((num_bss, action_dim), dtype=np.float32)
+
+    expected_size = num_bss * action_dim
+    if action.size != expected_size:
+        if action.size < expected_size:
+            action = np.pad(action, (0, expected_size - action.size))
+        else:
+            action = action[:expected_size]
+
+    return action.reshape(num_bss, action_dim)
 
 
 def evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas):
     env = Sim(config)
-    oracle_agents = [OracleHeuristicBandit(i, num_bss, num_antennas) for i in range(num_bss)]
+    oracle_agents = [
+        OracleHeuristicBandit(i, num_bss, num_antennas) for i in range(num_bss)
+    ]
     throughputs = []
 
     for i in range(max_episode):
@@ -277,10 +304,10 @@ def evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas):
         t = 0
 
         while True:
-            action = build_heuristic_action(oracle_agents, obs)
-            action_env = action.reshape(
-                env.num_bs, min(config.num_antennas - 1, env.num_bs - 1)
+            action = build_heuristic_action(
+                oracle_agents, obs, num_bss=num_bss, num_antennas=num_antennas
             )
+            action_env = np.asarray(action, dtype=np.float32)
             next_obs, reward, done, info = env.step(action_env)
             episode_aggregate_throughput += float(
                 info.get("aggregate_throughput_mbps", 0.0)
@@ -307,7 +334,9 @@ def evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas):
     return throughputs
 
 
-def plot_aggregate_throughput(episodes, throughput_series, output_path="aggregate_obss_throughput_curve.pdf"):
+def plot_aggregate_throughput(
+    episodes, throughput_series, output_path="aggregate_obss_throughput_curve.pdf"
+):
     fig, ax = plt.subplots(figsize=(10, 6))
 
     if isinstance(throughput_series, dict):
@@ -352,13 +381,65 @@ def plot_aggregate_throughput(episodes, throughput_series, output_path="aggregat
             )
 
     ax.set_xlabel("Episode")
-    ax.set_ylabel("Aggregate OBSS throughput [Mb/s]")
+    ax.set_ylabel("Aggregate OBSS throughput [Mb/slot]")
+    ax.set_ylim(250)
     ax.set_title("Aggregate OBSS throughput vs. episode")
     ax.legend(loc="lower right")
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train DDPG and/or plot aggregate throughput history from one or two CSV files."
+    )
+    parser.add_argument(
+        "--history-file",
+        default="training_history.csv",
+        help="CSV file with the current run history.",
+    )
+    parser.add_argument(
+        "--compare-file",
+        default=None,
+        help="Optional CSV file from another run to compare on the same plot.",
+    )
+    parser.add_argument(
+        "--history-label",
+        default="Current run",
+        help="Legend label for the current run.",
+    )
+    parser.add_argument(
+        "--compare-label",
+        default="Comparison run",
+        help="Legend label for the comparison run.",
+    )
+    parser.add_argument(
+        "--output-file",
+        default="aggregate_obss_throughput_curve.pdf",
+        help="Output filename for the throughput plot.",
+    )
+    parser.add_argument(
+        "--metric",
+        choices=["mb_per_slot", "mbps"],
+        default="mb_per_slot",
+        help="Throughput metric for history and the plot. Default is Mb/slot.",
+    )
+    parser.add_argument(
+        "--smooth-window",
+        type=int,
+        default=9,
+        help="Smoothing window size for the moving average curve.",
+    )
+    return parser.parse_args()
+
+
+def moving_average(values, window=9):
+    if window <= 1 or len(values) < window:
+        return np.array(values, dtype=float)
+    weights = np.ones(window, dtype=float) / window
+    return np.convolve(values, weights, mode="same")
 
 
 class DDPG(object):
@@ -427,7 +508,9 @@ class DDPG(object):
 
         for it in range(update_iteration):
             # For each Sample in replay buffer batch
-            state, next_state, action, reward, done = self.replay_buffer.sample(batch_size,it)
+            state, next_state, action, reward, done = self.replay_buffer.sample(
+                batch_size, it
+            )
             state = torch.FloatTensor(state).to(device)
             action = torch.FloatTensor(action).to(device)
             next_state = torch.FloatTensor(next_state).to(device)
@@ -468,13 +551,20 @@ class DDPG(object):
             soft updates, where 
             tau,a small fraction of the actor and critic network weights are transferred to their target counterparts. 
             """
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for param, target_param in zip(
+                self.critic.parameters(), self.critic_target.parameters()
+            ):
+                target_param.data.copy_(
+                    tau * param.data + (1 - tau) * target_param.data
+                )
 
-            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for param, target_param in zip(
+                self.actor.parameters(), self.actor_target.parameters()
+            ):
+                target_param.data.copy_(
+                    tau * param.data + (1 - tau) * target_param.data
+                )
 
-           
             self.num_actor_update_iteration += 1
             self.num_critic_update_iteration += 1
 
@@ -503,7 +593,9 @@ code_start_time = time.time()
 
 
 if __name__ == "__main__":
-    seed = 42
+    args = parse_args()
+
+    seed = 55
     num_bss = 7
     num_antennas = 4
     config = Config(num_bss, num_antennas, seed)
@@ -527,6 +619,7 @@ if __name__ == "__main__":
     flag1 = True
     flag2 = True
     allRewards = []
+    aggregate_throughputs = []
 
     max_episode = 400
     allRewards = []
@@ -539,14 +632,18 @@ if __name__ == "__main__":
         history_heuristic_throughputs,
     ) = load_training_history()
     if len(history_episodes) >= max_episode:
-        print(f"Using existing training history from training_history.csv with {len(history_episodes)} episodes.")
+        print(
+            f"Using existing training history from {args.history_file} with {len(history_episodes)} episodes."
+        )
         allRewards = history_rewards[:max_episode]
         aggregate_throughputs = history_throughputs[:max_episode]
         heuristic_throughputs = history_heuristic_throughputs[:max_episode]
     else:
         for i in range(max_episode):
             print(f"Episode {i} | Main_DDPG_Interf_Opt_{num_bss}APs_fastRunning")
-            print(f"BS: {config.num_bss} | Antennas: {config.num_antennas} | (STA)s: {config.max_num_stas}")
+            print(
+                f"BS: {config.num_bss} | Antennas: {config.num_antennas} | (STA)s: {config.max_num_stas}"
+            )
             obs = env.reset()
             state = obs.flatten()
             # print(state)
@@ -563,14 +660,18 @@ if __name__ == "__main__":
                 oracle_action = np.asarray(oracle_actor.predict(obs)).flatten()
 
                 # Reshape for env: each AP gets min(num_antennas-1, num_bs-1) null angles
-                action_env = action.reshape(env.num_bs, min(config.num_antennas - 1, env.num_bs - 1))
+                action_env = action.reshape(
+                    env.num_bs, min(config.num_antennas - 1, env.num_bs - 1)
+                )
 
                 next_obs, reward, done, info = env.step(action_env)
 
                 next_state = next_obs.flatten()
 
                 # Train Oracle actor using critic guidance on the same simulated sample
-                oracle_action_tensor = torch.FloatTensor(oracle_action.reshape(1, -1)).to(device)
+                oracle_action_tensor = torch.FloatTensor(
+                    oracle_action.reshape(1, -1)
+                ).to(device)
                 state_tensor = torch.FloatTensor(state.reshape(1, -1)).to(device)
                 oracle_loss = -agent.critic(state_tensor, oracle_action_tensor).mean()
                 oracle_optimizer.zero_grad()
@@ -579,7 +680,9 @@ if __name__ == "__main__":
                 oracle_actor.update(oracle_action, obs, reward)
 
                 # Store flat action (length=action_dim) in replay buffer
-                agent.replay_buffer.push((state, next_state, action, reward, float(done)))
+                agent.replay_buffer.push(
+                    (state, next_state, action, reward, float(done))
+                )
 
                 episode_reward += reward
                 episode_aggregate_throughput += float(
@@ -604,6 +707,7 @@ if __name__ == "__main__":
                 print("Action sample:", action)
 
             allRewards.append(episode_reward)
+            # aggregate_throughputs.append(env.aggregate_obss_throughput)
             aggregate_throughputs.append(episode_aggregate_throughput / max(1, t))
 
             # Fix 4: Only update after buffer is sufficiently filled
@@ -620,7 +724,9 @@ if __name__ == "__main__":
                     oracle_actor.model.state_dict(), directory + "oracle_actor.pth"
                 )
 
-        heuristic_throughputs = evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas)
+        heuristic_throughputs = evaluate_oracle_heuristic(
+            config, max_episode, num_bss, num_antennas
+        )
         save_training_history(
             list(range(max_episode)),
             allRewards,
@@ -633,11 +739,15 @@ if __name__ == "__main__":
     plt.xlabel("Episode")
     plt.ylabel("Sum log2(rate)")
     plt.title("DDPG Learning Curve")
-    plt.savefig("reward_curve.pdf")
+    plt.grid(True, alpha=0.25)
+    plt.tight_layout()
+    plt.savefig("reward_curve.pdf", dpi=300)
     plt.close()
 
     if "heuristic_throughputs" not in locals():
-        heuristic_throughputs = evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas)
+        heuristic_throughputs = evaluate_oracle_heuristic(
+            config, max_episode, num_bss, num_antennas
+        )
 
     plot_aggregate_throughput(
         list(range(len(aggregate_throughputs))),

@@ -1,6 +1,5 @@
 import random
 import matplotlib.pyplot as plt
-from typing import tuple, list, dict
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
 import numpy as np
@@ -138,6 +137,7 @@ class Config:
     max_steps_episode: int = 200
     channel_freq: float = 2.4
     bw_mhz: float = 20.0
+    tick: float = 0.05
     tx_power_dbm: float = 20.0
     noise_mw: float = 4e-10
     area_size: float = 75.0
@@ -158,6 +158,7 @@ class Sim:
         self.noise_mw = getattr(config, 'noise_mw', 4e-10)
         self.max_steps_episode = config.max_steps_episode
         self.area_size = getattr(config, 'area_size', 75.0)
+        self.tick = config.tick
         self.topology_seed = getattr(config, 'topology_seed', config.seed)
         self.channel_update_interval_in_ticks = getattr(config, 'channel_update_interval_in_ticks', 1)
 
@@ -179,6 +180,7 @@ class Sim:
 
         self._generator = TopologyGenerator()
         self.num_steps = 0
+        self._episode_counter = 0
         self.reset()
 
     def get_spaces(self):
@@ -187,12 +189,19 @@ class Sim:
         return action_dim, state_dim
 
     def _build_topology(self):
+        episode_seed = self.topology_seed + self._episode_counter
         self.topology = self._generator.generate_open_space_topology(
-            topo_seed=self.topology_seed,
+            topo_seed=episode_seed,
             area_size=self.area_size,
             num_aps=self.num_bs,
             stations_per_ap=(self.config.min_num_stas, self.config.max_num_stas),
         )
+        # self.topology = self._generator.generate_multiroom_topology(
+        #     topo_seed=episode_seed,
+        #     grid_size=(3,3),
+        #     room_size=20.0,
+        #     stations_per_room=self.config.max_num_stas,
+        # )
         self.nodes = self.topology['nodes']
         self.node_dict = {node.id: node for node in self.nodes}
         self.aps = [node for node in self.nodes if node.node_type == 'AP']
@@ -203,6 +212,7 @@ class Sim:
         }
 
     def reset(self):
+        self._episode_counter += 1
         self.num_steps = 0
         self.csi_features = []
         self.csi_labels = []
@@ -326,9 +336,10 @@ class Sim:
 
         # print(f"DEBUG SLOT: total_rate={sum(rates):.2f}, per_rate={[round(r,2) for r in rates]}")
 
-
+        aggregate_throughput = float(np.sum(rates))
         reward = float(np.sum(np.log2(np.maximum(rates, 1e-6))))
         aggregate_throughput_mbps = float(np.sum(rates))
+        aggregate_throughput_mb_per_slot = aggregate_throughput_mbps * self.tick
         self.num_steps += 1
         obs = self.get_observation()
         done = self.num_steps >= self.max_steps_episode

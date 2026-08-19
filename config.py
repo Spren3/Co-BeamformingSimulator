@@ -7,7 +7,7 @@ class Config(object):
         self.min_num_stas = 1
         self.max_num_stas = 1
         self.client_radius = 8
-        self.bw_mhz = 80
+        self.bw_mhz = 20
         self.channel_freq = 5150e6
         self.tick = 0.05  # tdma slot size, 50ms
         self.channel_update_interval_in_ticks = 1  # how often the channel is sounded, 1=perfect CSI

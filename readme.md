@@ -8,7 +8,7 @@ Project was implemented in Python, because it supports rapid prototyping and sup
 This simulator is based on beam pattern created in purpose of 
 
 Basic expermients with one or two APs are proceeded in [basic_scenarios.py](/basic_scenarios.py) file. Also, there are stored functions responsible for creating plots with various metrics, depicted and explained in thesis. <br>
-In main simulator file -- [simulator.py](/simulator.py), where <b>NetworkNode</b> class is created. There two types of topologies, called openspace and multiroom are generated, simulation rounds are proceeded and neccessary statistics are returned.
+In main simulator file — [simulator.py](/simulator.py), where <b>NetworkNode</b> class is created. There two types of topologies, called openspace and multiroom are generated, simulation rounds are proceeded and neccessary statistics are returned.
 
 ## **Installation**
 1. **Clone the repository:**
@@ -30,7 +30,7 @@ In main simulator file -- [simulator.py](/simulator.py), where <b>NetworkNode</b
     pip install -r requirements.txt
     ```
 ## **Usage**
-Basic_scenarios file contains set of configurations, if you want to test one, uncomment execution line, e.g.:
+[Basic_scenarios.py](/basic_scenarios.py) file contains set of configurations, if you want to test one, uncomment execution line, e.g.:
 ```python
 def fifth_scenario_4STA_2AP_line(d1=10, d2_range=None):
     if d2_range is None:
@@ -46,7 +46,7 @@ and run in terminal:
 python basic_scenarios.py
 ```
 
-For the simulator code:
+For the [simulator.py](/simulator.py) code:
 ```python
 def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: int, topology_seed: int):
     np.random.seed(seed)
@@ -68,4 +68,7 @@ def round_sim(num_simulations: int, pattern_type: str, ap_selection: str, seed: 
 ### after last line of this function type for example:
 your_variable=round_sim(100, "beam", "all", 37,1)[0]
 ```
-After the closing round bracket, entering 0 in square brackets allows to save the average aggregate throughput per round for the selected configuration to a variable. Entering 1 in square brackets allows you to save a list of $n$ total throughputs to a variable for later use in a function that displays averages with confidence intervals, where $n$ is the number of rounds. Writing 2 in square brackets allows to save a list of throughputs per-station to a variable in order to pass it as an argument to the function showing the cumulative distribution function (CDF).
+After the closing round bracket, entering 0 in square brackets allows to save the average aggregate throughput per round for the selected configuration to a variable. Entering 1 in square brackets allows you to save a list of $n$ total throughputs to a variable for later use in a function that displays averages with confidence intervals, where $n$ is the number of rounds. Writing 2 in square brackets allows to save a list of throughputs per-station to a variable in order to pass it as an argument to the function showing the cumulative distribution function (CDF). Finally, in terminal, execute:
+```bash
+python simulator.py
+```
