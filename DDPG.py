@@ -42,6 +42,7 @@ directory = "./"
 hidden1 = 32
 hidden2 = 32
 MIN_BUFFER_SIZE = 5000
+FIXED_NULLS_DEG = np.linspace(-60.0, 60.0, 11, dtype=np.float32)
 
 
 """
@@ -258,13 +259,26 @@ def load_training_history(filepath="training_history.csv", metric="mb_per_slot")
     episodes, rewards, aggregate_throughputs, heuristic_throughputs = [], [], [], []
     with open(filepath, newline="") as csv_file:
         reader = csv.DictReader(csv_file)
-        has_heuristic = heuristic_col in reader.fieldnames
+        has_heuristic = bool(reader.fieldnames and heuristic_col in reader.fieldnames)
         for row in reader:
-            episodes.append(int(row["episode"]))
-            rewards.append(float(row["reward"]))
-            aggregate_throughputs.append(float(row[throughput_col]))
+            try:
+                episode = int(row["episode"])
+                reward = float(row["reward"])
+                throughput = float(row[throughput_col])
+            except (TypeError, ValueError):
+                continue
+
+            episodes.append(episode)
+            rewards.append(reward)
+            aggregate_throughputs.append(throughput)
+
             if has_heuristic:
-                heuristic_throughputs.append(float(row[heuristic_col]))
+                raw_heuristic = row.get(heuristic_col, "")
+                try:
+                    heuristic_value = float(raw_heuristic)
+                except (TypeError, ValueError):
+                    heuristic_value = float("nan")
+                heuristic_throughputs.append(heuristic_value)
 
     return episodes, rewards, aggregate_throughputs, heuristic_throughputs
 
@@ -289,6 +303,83 @@ def build_heuristic_action(oracle_agents, obs, num_bss, num_antennas):
             action = action[:expected_size]
 
     return action.reshape(num_bss, action_dim)
+
+
+class FixedNullBeamBandit:
+    """Baseline beamformer that keeps a fixed null pattern and only rotates it."""
+
+    def __init__(self, agent_id, num_bs, num_antennas):
+        self.agent_type = 2
+        self.agent_id = agent_id
+        self.num_bs = num_bs
+        self.num_antennas = num_antennas
+        self.max_nulls = min(num_antennas - 1, num_bs - 1)
+        self.fixed_nulls = np.linspace(-60.0, 60.0, 11, dtype=np.float32)
+
+    def predict(self, context):
+        null_pattern = self.fixed_nulls[: self.max_nulls].astype(np.float32)
+        return np.pad(
+            null_pattern,
+            (0, max(0, self.max_nulls - len(null_pattern))),
+            mode="constant",
+            constant_values=0.0,
+        )
+
+    def update(self, action, context, reward):
+        return None
+
+
+def build_fixed_null_action(fixed_null_agents, obs, num_bss, num_antennas):
+    action = []
+    for agent in fixed_null_agents:
+        pred = np.asarray(agent.predict(obs), dtype=np.float32).flatten()
+        pred = np.nan_to_num(pred, nan=0.0)
+        action.extend(pred.tolist())
+
+    action = np.asarray(action, dtype=np.float32)
+    action_dim = min(max(1, num_antennas - 1), max(1, num_bss - 1))
+    if action.size == 0:
+        return np.zeros((num_bss, action_dim), dtype=np.float32)
+
+    expected_size = num_bss * action_dim
+    if action.size != expected_size:
+        if action.size < expected_size:
+            action = np.pad(action, (0, expected_size - action.size))
+        else:
+            action = action[:expected_size]
+
+    return action.reshape(num_bss, action_dim)
+
+
+def evaluate_fixed_null_baseline(config, max_episode, num_bss, num_antennas):
+    env = Sim(config)
+    fixed_null_agents = [
+        FixedNullBeamBandit(i, num_bss, num_antennas) for i in range(num_bss)
+    ]
+    throughputs = []
+
+    for i in range(max_episode):
+        obs = env.reset()
+        episode_aggregate_throughput = 0.0
+        t = 0
+
+        while True:
+            action = build_fixed_null_action(
+                fixed_null_agents, obs, num_bss=num_bss, num_antennas=num_antennas
+            )
+            next_obs, reward, done, info = env.step(np.asarray(action, dtype=np.float32))
+            episode_aggregate_throughput += float(
+                info.get("aggregate_throughput_mbps", 0.0)
+            )
+            obs = next_obs
+            t += 1
+            if done:
+                break
+
+        throughputs.append(episode_aggregate_throughput / max(1, t))
+
+    env.close()
+    return throughputs
 
 
 def evaluate_oracle_heuristic(config, max_episode, num_bss, num_antennas):
@@ -621,7 +712,7 @@ if __name__ == "__main__":
     allRewards = []
     aggregate_throughputs = []
 
-    max_episode = 400
+    max_episode = 50
     allRewards = []
     aggregate_throughputs = []
 
@@ -749,11 +840,15 @@ if __name__ == "__main__":
             config, max_episode, num_bss, num_antennas
         )
 
+    baseline_throughputs = evaluate_fixed_null_baseline(
+        config, max_episode, num_bss, num_antennas
+    )
     plot_aggregate_throughput(
         list(range(len(aggregate_throughputs))),
         {
             "DDPG": aggregate_throughputs,
             "OracleHeuristic": heuristic_throughputs,
+            "FixedNullBaseline": baseline_throughputs,
         },
     )
     code_end_time = time.time()
