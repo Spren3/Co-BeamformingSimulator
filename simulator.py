@@ -264,7 +264,8 @@ class Sim:
             beam_angle = self._generator.calculate_angle(ap, target_sta)
             null_angles = action[i]
             null_angles = null_angles[~np.isnan(null_angles)] if null_angles.size else null_angles
-            nulls_rad = np.asarray(null_angles * 360.0 / 360.0) / 360.0 * np.pi if null_angles.size else np.array([])
+            # Actions are normalized angles in [0, 1], covering the full circle.
+            nulls_rad = np.asarray(null_angles) * 2.0 * np.pi if null_angles.size else np.array([])
             theta_bins, w_fft_dB = calculate_beam_pattern(
                 self.num_antennas, 0.5, 0, nulls_rad
             )
@@ -281,7 +282,7 @@ class Sim:
                 interfering_sta = active_stas[j]
                 curr_null_angles = action[j]
                 curr_null_angles = curr_null_angles[~np.isnan(curr_null_angles)] if curr_null_angles.size else curr_null_angles
-                curr_nulls_rad = np.asarray(curr_null_angles * 360.0 / 360.0) / 360.0 * np.pi if curr_null_angles.size else np.array([])
+                curr_nulls_rad = np.asarray(curr_null_angles) * 2.0 * np.pi if curr_null_angles.size else np.array([])
                 int_theta_bins, int_w_fft_dB = calculate_beam_pattern(
                     self.num_antennas, 0.5, 0, curr_nulls_rad
                 )

@@ -314,7 +314,8 @@ class FixedNullBeamBandit:
         self.num_bs = num_bs
         self.num_antennas = num_antennas
         self.max_nulls = min(num_antennas - 1, num_bs - 1)
-        self.fixed_nulls = np.linspace(-60.0, 60.0, 11, dtype=np.float32)
+        fixed_nulls_deg = np.linspace(-60.0, 60.0, 11, dtype=np.float32)
+        self.fixed_nulls = np.mod(fixed_nulls_deg, 360.0) / 360.0
 
     def predict(self, context):
         null_pattern = self.fixed_nulls[: self.max_nulls].astype(np.float32)
@@ -721,7 +722,7 @@ if __name__ == "__main__":
         history_rewards,
         history_throughputs,
         history_heuristic_throughputs,
-    ) = load_training_history()
+    ) = load_training_history(args.history_file, metric=args.metric)
     if len(history_episodes) >= max_episode:
         print(
             f"Using existing training history from {args.history_file} with {len(history_episodes)} episodes."
