@@ -1,8 +1,9 @@
-"""One-off 3x3 multiroom placement and model experiment."""
+"""Station-placement scenarios and the original multiroom model experiment."""
 
 import copy
 import argparse
 import csv
+import logging
 from pathlib import Path
 import time
 
@@ -18,14 +19,18 @@ from simulator import Config, NetworkNode, Sim, TopologyGenerator
 GRID_SIZE = (2, 2)
 ROOM_SIZE = 20.0
 STATION_OFFSET = 5.0
-TOPOLOGY_SEED = 66
+TOPOLOGY_SEED = 88
 NUM_ANTENNAS = 4
 EXPERIMENT_EPISODES = 100
 STEPS_PER_EPISODE = 200
 RESULTS_PATH = Path(__file__).with_name(f"station_placement_results_{TOPOLOGY_SEED}.csv")
+DEBUG_LOG_PATH = Path(__file__).with_name(
+    f"station_placement_debug_{TOPOLOGY_SEED}.log"
+)
 THROUGHPUT_PLOT_PATH = Path(__file__).with_name(
     f"station_placement_aggregate_throughput_{TOPOLOGY_SEED}.pdf"
 )
+DEBUG_LOGGER = logging.getLogger("station_placement_experiment")
 
 
 def create_experiment_topology(
@@ -83,12 +88,70 @@ def create_experiment_topology(
     return topology
 
 
+def create_asymmetric_topology(
+    rotation_deg: float = 145.0,
+    station_radius: float = 8.0,
+    topo_seed: int = TOPOLOGY_SEED,
+) -> dict:
+    """Four APs, opposite STA pairs and all 16 joint receiver selections."""
+    topology = create_experiment_topology(
+        topo_seed=topo_seed, station_offset=station_radius
+    )
+    aps = [node for node in topology["nodes"] if node.node_type == "AP"]
+    for ap, base_angle in zip(aps, (30.0, 120.0, 220.0, 310.0)):
+        angle = np.deg2rad(base_angle + rotation_deg)
+        stations = sorted(
+            (node for node in topology["nodes"] if node.associated_ap == ap.id),
+            key=lambda node: node.id,
+        )
+        for index, station in enumerate(stations):
+            station.x = ap.x + (-1) ** index * station_radius * np.cos(angle)
+            station.y = ap.y + (-1) ** index * station_radius * np.sin(angle)
+    topology["parameters"].update(
+        scenario="asymmetric",
+        rotation_deg=rotation_deg,
+        station_radius=station_radius,
+        schedule="independent_binary",
+        cycle_length=16,
+    )
+    topology["bipartite_graph"] = TopologyGenerator()._create_bipartite_graph(
+        topology["nodes"]
+    )
+    return topology
+
+
+def create_two_ap_topology() -> dict:
+    """Two APs 20 m apart, each with one STA 8 m away (60 and 240 deg)."""
+    nodes = []
+    for index, (x, angle_deg) in enumerate(((10.0, 60.0), (30.0, 240.0))):
+        ap_id = index * 2
+        angle = np.deg2rad(angle_deg)
+        nodes.extend(
+            (
+                NetworkNode(ap_id, x, 10.0, "AP"),
+                NetworkNode(
+                    ap_id + 1, x + 8.0 * np.cos(angle),
+                    10.0 + 8.0 * np.sin(angle), "STA", ap_id,
+                ),
+            )
+        )
+    return {
+        "nodes": nodes,
+        "bipartite_graph": TopologyGenerator()._create_bipartite_graph(nodes),
+        "topology_type": "multiroom",
+        "parameters": {
+            "grid_size": (1, 2), "room_size": 20.0,
+            "total_area": (40.0, 20.0), "scenario": "two-ap", "cycle_length": 1,
+        },
+    }
+
+
 def plot_experiment_topology(
     topology: dict,
     output_path: Path = Path(__file__).with_name("station_placement_experiment.png"),
 ) -> None:
     """Draw the room layout and save a labeled placement plot."""
-    rows, cols = GRID_SIZE
+    rows, cols = topology["parameters"]["grid_size"]
     room_size = topology["parameters"]["room_size"]
     nodes: list[NetworkNode] = topology["nodes"]
     aps = [node for node in nodes if node.node_type == "AP"]
@@ -144,7 +207,7 @@ def plot_experiment_topology(
 
     for ap_index, ap in enumerate(aps):
         row, col = divmod(ap_index, cols)
-        label_number = col * rows + row + 1
+        label_number = ap_index + 1
         ax.text(
             ap.x,
             ap.y + room_size * 0.32,
@@ -184,6 +247,14 @@ class ExperimentSim(Sim):
             ap.id: [sta for sta in self.stas if sta.associated_ap == ap.id]
             for ap in self.aps
         }
+
+    def _get_active_stas(self):
+        if self.topology["parameters"].get("schedule") == "independent_binary":
+            return [
+                self.stas_by_ap[ap.id][(self.num_steps >> index) & 1]
+                for index, ap in enumerate(self.aps)
+            ]
+        return super()._get_active_stas()
 
 
 def evaluate_episode(env: ExperimentSim, policy) -> dict[str, float]:
@@ -309,6 +380,7 @@ def train_learned_models(config: Config, topology: dict):
     )
     bandit_eval_env = ExperimentSim(config, topology)
     training_history = []
+    action_width = min(env.num_antennas - 1, env.num_bs - 1)
 
     for episode in range(EXPERIMENT_EPISODES):
         obs = env.reset()
@@ -321,7 +393,7 @@ def train_learned_models(config: Config, topology: dict):
             action = agent.select_action(state, noise)
             bandit_action = np.asarray(neural_bandit.predict(obs), dtype=np.float32)
             next_obs, reward, done, info = env.step(
-                action.reshape(env.num_bs, env.num_antennas - 1)
+                action.reshape(env.num_bs, action_width)
             )
             next_state = next_obs.flatten()
             agent.replay_buffer.push(
@@ -341,6 +413,17 @@ def train_learned_models(config: Config, topology: dict):
             episode_reward += reward
             episode_throughput += float(info["aggregate_throughput_mbps"])
             episode_steps += 1
+            DEBUG_LOGGER.debug(
+                "episode=%d step=%d reward=%.6f aggregate_throughput_mbps=%.6f "
+                "ddpg_action=%s neural_bandit_action=%s ap_diagnostics=%s",
+                episode + 1,
+                episode_steps,
+                reward,
+                info["aggregate_throughput_mbps"],
+                np.array2string(action, precision=4, separator=", "),
+                np.array2string(bandit_action, precision=4, separator=", "),
+                info["ap_diagnostics"],
+            )
             obs = next_obs
             if done:
                 break
@@ -476,6 +559,16 @@ if __name__ == "__main__":
         f"{STEPS_PER_EPISODE} kroków/epizod.",
         flush=True,
     )
-    experiment_topology = create_experiment_topology()
-    plot_experiment_topology(experiment_topology)
-    run_model_experiment(experiment_topology)
+    debug_handler = logging.FileHandler(DEBUG_LOG_PATH, mode="w", encoding="utf-8")
+    debug_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    )
+    DEBUG_LOGGER.setLevel(logging.DEBUG)
+    DEBUG_LOGGER.addHandler(debug_handler)
+    try:
+        experiment_topology = create_experiment_topology()
+        plot_experiment_topology(experiment_topology)
+        run_model_experiment(experiment_topology)
+    finally:
+        DEBUG_LOGGER.removeHandler(debug_handler)
+        debug_handler.close()
